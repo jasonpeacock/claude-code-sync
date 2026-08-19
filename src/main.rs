@@ -1,12 +1,11 @@
 use std::io::{self, BufRead, Write};
 
 use claude_code_sync::app::{
-    backup, home_dir, read_include_list, read_manifest, restore, RestoreOptions,
+    backup, home_dir, read_include_list, read_manifest, restore, settings_conflicts, RestoreOptions,
 };
 use claude_code_sync::archive::{read_zip, Result};
 use claude_code_sync::classify::BackupOptions;
-use claude_code_sync::merge::{find_conflicts, Choice, Conflict, MergeStrategy};
-use claude_code_sync::paths::resolve_path;
+use claude_code_sync::merge::{Choice, Conflict, MergeStrategy};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -215,26 +214,9 @@ fn run() -> Result<i32> {
             let entries = read_zip(bytes).map_err(|e| format!("{path}: {e}"))?;
             let manifest = read_manifest(&entries)?;
 
-            // Conflicts are collected up front so the interactive prompt is not tangled into
-            // the recursive merge.
             let mut answers: Vec<(String, Choice)> = Vec::new();
             if strategy == MergeStrategy::Ask {
-                let settings = home_dir()?.join(".claude").join("settings.json");
-                let archived = entries.iter().find(|e| e.path == "claude/settings.json");
-                if let (Some(archived), true) = (archived, settings.exists()) {
-                    let ctx = claude_code_sync::app::current_context()?;
-                    let parsed: serde_json::Value = serde_json::from_slice(&archived.data)?;
-                    let incoming =
-                        claude_code_sync::app::map_strings(&parsed, &|s| resolve_path(s, &ctx));
-                    let bytes = std::fs::read(&settings)
-                        .map_err(|e| format!("{}: {e}", settings.display()))?;
-                    let existing: serde_json::Value = serde_json::from_slice(&bytes)
-                        .map_err(|e| format!("{}: {e}", settings.display()))?;
-                    // Same canonicalization the merge uses, or `ask` prompts about a pair of
-                    // values that differ only in separator style.
-                    let existing = claude_code_sync::app::canonicalize(&existing, &ctx);
-                    answers = ask_for(&find_conflicts(&existing, &incoming));
-                }
+                answers = ask_for(&settings_conflicts(&entries)?);
             }
 
             if !dry_run {

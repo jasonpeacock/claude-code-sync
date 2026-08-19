@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::archive::{Entry, FileRecord, LinkRecord, Manifest, Result, ARCHIVE_VERSION, MANIFEST};
 use crate::classify::{classify_entry, should_descend, BackupOptions, Classification};
 use crate::eol::{denormalize_for_disk, normalize_for_archive, LineEnding};
-use crate::merge::{merge_settings, Choice, Conflict, MergeStrategy};
+use crate::merge::{find_conflicts, merge_settings, Choice, Conflict, MergeStrategy};
 use crate::paths::{forward_slashes, resolve_path, tokenize_path, PathContext};
 
 /// The only file whose contents are machine-specific.
@@ -244,6 +244,41 @@ pub fn canonicalize(value: &serde_json::Value, ctx: &PathContext) -> serde_json:
     map_strings(value, &|s| resolve_path(&tokenize_path(s, ctx), ctx))
 }
 
+/// This machine's settings.json, spelled the way a restored value spells it. A missing file
+/// reads as an empty object, which merges to exactly the incoming side.
+fn local_settings(path: &Path, ctx: &PathContext) -> Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let bytes = fs::read(path).map_err(at(path))?;
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(canonicalize(&parsed, ctx))
+}
+
+fn incoming_settings(entry: &Entry, ctx: &PathContext) -> Result<serde_json::Value> {
+    let archived: serde_json::Value = serde_json::from_slice(&entry.data)
+        .map_err(|e| format!("{SETTINGS} inside the archive: {e}"))?;
+    Ok(map_strings(&archived, &|s| resolve_path(s, ctx)))
+}
+
+/// The conflicts a restore would hit in settings.json, collected before anything is written so
+/// the interactive prompt is not tangled into the recursive merge.
+pub fn settings_conflicts(entries: &[Entry]) -> Result<Vec<Conflict>> {
+    let Some(archived) = entries.iter().find(|e| e.path == SETTINGS) else {
+        return Ok(Vec::new());
+    };
+    let local = home_dir()?.join(".claude").join("settings.json");
+    if !local.exists() {
+        return Ok(Vec::new());
+    }
+    let ctx = current_context()?;
+    Ok(find_conflicts(
+        &local_settings(&local, &ctx)?,
+        &incoming_settings(archived, &ctx)?,
+    ))
+}
+
 /// Check every entry and link before the first byte is written.
 ///
 /// An archive can arrive from anywhere, so it is untrusted input rather than this tool's own
@@ -335,18 +370,12 @@ pub fn restore(
         };
 
         let data: Cow<[u8]> = if entry.path == SETTINGS {
-            let archived: serde_json::Value = serde_json::from_slice(&entry.data)
-                .map_err(|e| format!("{SETTINGS} inside the archive: {e}"))?;
-            let incoming = map_strings(&archived, &|s| resolve_path(s, &ctx));
-            let existing = if absolute.exists() {
-                let bytes = fs::read(&absolute).map_err(at(&absolute))?;
-                let parsed: serde_json::Value = serde_json::from_slice(&bytes)
-                    .map_err(|e| format!("{}: {e}", absolute.display()))?;
-                canonicalize(&parsed, &ctx)
-            } else {
-                serde_json::json!({})
-            };
-            let merged = merge_settings(&existing, &incoming, options.strategy, options.resolve);
+            let merged = merge_settings(
+                &local_settings(&absolute, &ctx)?,
+                &incoming_settings(entry, &ctx)?,
+                options.strategy,
+                options.resolve,
+            );
             Cow::Owned(format!("{}\n", serde_json::to_string_pretty(&merged)?).into_bytes())
         } else {
             Cow::Borrowed(&entry.data)
