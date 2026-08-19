@@ -60,11 +60,12 @@ impl Args {
                 }
             }
             if VALUE_FLAGS.contains(&argument.as_str()) {
-                if let Some(value) = raw.get(index + 1) {
-                    parsed.values.push((argument.clone(), value.clone()));
-                    index += 2;
-                    continue;
-                }
+                // A dangling `--merge` records an empty value so the command rejects it, rather
+                // than falling through to a flag and silently applying the default strategy.
+                let value = raw.get(index + 1).cloned().unwrap_or_default();
+                parsed.values.push((argument.clone(), value));
+                index += 2;
+                continue;
             }
             if argument.starts_with('-') {
                 parsed.flags.push(argument.clone());
@@ -200,12 +201,9 @@ fn run() -> Result<i32> {
                 return Ok(1);
             };
 
-            let Some(strategy) = MergeStrategy::parse(args.value("--merge").unwrap_or("incoming"))
-            else {
-                eprintln!(
-                    "unknown merge strategy: {}",
-                    args.value("--merge").unwrap_or("")
-                );
+            let requested = args.value("--merge").unwrap_or("incoming");
+            let Some(strategy) = MergeStrategy::parse(requested) else {
+                eprintln!("unknown merge strategy: {requested}");
                 return Ok(1);
             };
 
@@ -310,5 +308,24 @@ mod tests {
             .with_ymd_and_hms(2026, 8, 19, 4, 32, 3)
             .unwrap();
         assert_eq!(stamp(&moment), "20260819-043203");
+    }
+
+    #[test]
+    fn a_value_flag_with_nothing_after_it_is_rejected_rather_than_defaulted() {
+        let args = Args::parse(vec!["restore".into(), "a.zip".into(), "--merge".into()]);
+        assert_eq!(args.value("--merge"), Some(""));
+        assert_eq!(MergeStrategy::parse(args.value("--merge").unwrap()), None);
+    }
+
+    #[test]
+    fn both_flag_spellings_reach_the_same_value() {
+        for raw in [
+            vec!["backup".into(), "--out".into(), "dir".into()],
+            vec!["backup".to_string(), "--out=dir".into()],
+        ] {
+            let args = Args::parse(raw);
+            assert_eq!(args.command.as_deref(), Some("backup"));
+            assert_eq!(args.value("--out"), Some("dir"));
+        }
     }
 }
