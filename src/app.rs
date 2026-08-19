@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::archive::{Entry, FileRecord, LinkRecord, Manifest, Result, ARCHIVE_VERSION, MANIFEST};
-use crate::classify::{classify_entry, BackupOptions, Classification};
+use crate::classify::{classify_entry, should_descend, BackupOptions, Classification};
 use crate::eol::{denormalize_for_disk, normalize_for_archive, LineEnding};
 use crate::merge::{merge_settings, Choice, Conflict, MergeStrategy};
 use crate::paths::{forward_slashes, resolve_path, tokenize_path, PathContext};
@@ -150,18 +150,18 @@ fn walk(root: &Path, prefix: &str, ctx: &PathContext, options: &BackupOptions) -
                         target: tokenize_path(&forward_slashes(&target.to_string_lossy()), ctx),
                     });
                 }
-                continue;
-            }
-
-            if metadata.is_dir() {
-                stack.push(absolute);
-                continue;
-            }
-
-            match classify_entry(&archive_path, options) {
-                Classification::Secret => found.skipped_secrets.push(archive_path),
-                Classification::Include => found.files.push((archive_path, absolute)),
-                Classification::Exclude => {}
+            } else if metadata.is_dir() {
+                // Pruning here is the difference between opening ~200 entries and ~15000: the
+                // caches and transcript stores under ~/.claude dwarf everything carried.
+                if should_descend(&archive_path, options) {
+                    stack.push(absolute);
+                }
+            } else {
+                match classify_entry(&archive_path, options) {
+                    Classification::Secret => found.skipped_secrets.push(archive_path),
+                    Classification::Include => found.files.push((archive_path, absolute)),
+                    Classification::Exclude => {}
+                }
             }
         }
     }

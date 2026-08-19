@@ -89,6 +89,15 @@ fn matches_extra(path: &str, extras: &[String]) -> bool {
     })
 }
 
+/// Does a user-listed extra name something at, above, or below this directory?
+fn extra_reaches_into(dir: &str, extra: &str) -> bool {
+    let extra = extra.trim().trim_end_matches('/');
+    !extra.is_empty()
+        && (extra == dir
+            || extra.starts_with(&format!("{dir}/"))
+            || dir.starts_with(&format!("{extra}/")))
+}
+
 /// Decide what happens to one archive-relative path.
 pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification {
     let path = forward_slashes(rel_path);
@@ -147,6 +156,42 @@ pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification
     }
 }
 
+/// Can anything under this directory be included? A `false` prunes the whole subtree unread.
+///
+/// CRITICAL: this must stay in step with [`classify_entry`]. A directory refused here is never
+/// opened, so a rule that includes a file whose parent is pruned drops that file silently, with
+/// no error anywhere. `assert_included` in the tests below guards the pairing.
+pub fn should_descend(dir_path: &str, options: &BackupOptions) -> bool {
+    let path = forward_slashes(dir_path);
+
+    if options
+        .extras
+        .iter()
+        .any(|extra| extra_reaches_into(&path, extra))
+    {
+        return true;
+    }
+    if path == "agents" || path.starts_with("agents/") {
+        return true;
+    }
+
+    let Some(rest) = path.strip_prefix("claude/") else {
+        return path == "claude";
+    };
+
+    let mut parts = rest.split('/');
+    match parts.next() {
+        // Every PLUGIN_FILES entry sits directly under plugins/; the rest is checkouts and caches.
+        Some("plugins") => parts.next().is_none(),
+        Some("projects") => {
+            let _project = parts.next();
+            options.with_memory && matches!(parts.next(), None | Some("memory"))
+        }
+        Some(head) => PORTABLE_DIRS.contains(&head),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +212,29 @@ mod tests {
         }
     }
 
+    /// An included file is only ever archived if every directory above it is walked into, so
+    /// each Include assertion also asserts its whole parent chain is reachable.
+    fn assert_included(path: &str, options: &BackupOptions) {
+        assert_eq!(
+            classify_entry(path, options),
+            Classification::Include,
+            "{path}"
+        );
+        let parts: Vec<&str> = path.split('/').collect();
+        for depth in 1..parts.len() {
+            let dir = parts[..depth].join("/");
+            assert!(should_descend(&dir, options), "{dir} prunes {path}");
+        }
+    }
+
+    fn assert_excluded(path: &str, options: &BackupOptions) {
+        assert_eq!(
+            classify_entry(path, options),
+            Classification::Exclude,
+            "{path}"
+        );
+    }
+
     #[test]
     fn hand_written_config_is_included() {
         for path in [
@@ -181,24 +249,14 @@ mod tests {
             "claude/output-styles/terse.md",
             "claude/tools/helper.ts",
         ] {
-            assert_eq!(
-                classify_entry(path, &defaults()),
-                Classification::Include,
-                "{path}"
-            );
+            assert_included(path, &defaults());
         }
     }
 
     #[test]
     fn the_agents_skill_source_tree_is_included() {
-        assert_eq!(
-            classify_entry("agents/skills/grilling/SKILL.md", &defaults()),
-            Classification::Include
-        );
-        assert_eq!(
-            classify_entry("agents/.skill-lock.json", &defaults()),
-            Classification::Include
-        );
+        assert_included("agents/skills/grilling/SKILL.md", &defaults());
+        assert_included("agents/.skill-lock.json", &defaults());
     }
 
     #[test]
@@ -208,11 +266,7 @@ mod tests {
             "claude/plugins/known_marketplaces.json",
             "claude/plugins/blocklist.json",
         ] {
-            assert_eq!(
-                classify_entry(path, &defaults()),
-                Classification::Include,
-                "{path}"
-            );
+            assert_included(path, &defaults());
         }
         for path in [
             "claude/plugins/plugin-catalog-cache.json",
@@ -220,35 +274,21 @@ mod tests {
             "claude/plugins/marketplaces/official/README.md",
             "claude/plugins/repos/official/plugin.json",
         ] {
-            assert_eq!(
-                classify_entry(path, &defaults()),
-                Classification::Exclude,
-                "{path}"
-            );
+            assert_excluded(path, &defaults());
         }
     }
 
     #[test]
     fn a_plugin_feature_marker_dotfile_is_carried() {
         // Losing one of these silently changes behavior after a restore.
-        assert_eq!(
-            classify_entry("claude/.i-have-adhd-always", &defaults()),
-            Classification::Include
-        );
-        assert_eq!(
-            classify_entry("claude/.claude-sync-include", &defaults()),
-            Classification::Include
-        );
+        assert_included("claude/.i-have-adhd-always", &defaults());
+        assert_included("claude/.claude-sync-include", &defaults());
     }
 
     #[test]
     fn tool_state_dotfiles_are_not_carried() {
         for path in ["claude/.last-cleanup", "claude/.last-update-result.json"] {
-            assert_eq!(
-                classify_entry(path, &defaults()),
-                Classification::Exclude,
-                "{path}"
-            );
+            assert_excluded(path, &defaults());
         }
     }
 
@@ -267,11 +307,7 @@ mod tests {
             "claude/history.jsonl",
             "claude/stats-cache.json",
         ] {
-            assert_eq!(
-                classify_entry(path, &defaults()),
-                Classification::Exclude,
-                "{path}"
-            );
+            assert_excluded(path, &defaults());
         }
     }
 
@@ -309,79 +345,54 @@ mod tests {
     #[test]
     fn an_extras_entry_carries_a_file_the_allowlist_would_have_dropped() {
         let options = extras(&["claude/history.jsonl"]);
-        assert_eq!(
-            classify_entry("claude/history.jsonl", &options),
-            Classification::Include
-        );
-        assert_eq!(
-            classify_entry("claude/stats-cache.json", &options),
-            Classification::Exclude
-        );
+        assert_included("claude/history.jsonl", &options);
+        assert_excluded("claude/stats-cache.json", &options);
     }
 
     #[test]
     fn an_extras_entry_ending_in_a_slash_carries_the_whole_subtree() {
         let options = extras(&["claude/context-mode/"]);
-        assert_eq!(
-            classify_entry("claude/context-mode/index.db", &options),
-            Classification::Include
-        );
-        assert_eq!(
-            classify_entry("claude/context-mode-other/x", &options),
-            Classification::Exclude
-        );
+        assert_included("claude/context-mode/index.db", &options);
+        assert_included("claude/context-mode/nested/deep/blob", &options);
+        assert_excluded("claude/context-mode-other/x", &options);
+        assert!(!should_descend("claude/context-mode-other", &options));
     }
 
     #[test]
     fn memory_is_excluded_by_default() {
-        assert_eq!(
-            classify_entry("claude/projects/c--foo/memory/MEMORY.md", &defaults()),
-            Classification::Exclude
-        );
+        assert_excluded("claude/projects/c--foo/memory/MEMORY.md", &defaults());
+        assert!(!should_descend("claude/projects", &defaults()));
     }
 
     #[test]
     fn memory_is_included_with_the_flag_while_transcripts_stay_out() {
-        assert_eq!(
-            classify_entry("claude/projects/c--foo/memory/MEMORY.md", &with_memory()),
-            Classification::Include
+        assert_included("claude/projects/c--foo/memory/MEMORY.md", &with_memory());
+        assert_included(
+            "claude/projects/c--foo/memory/nested/note.md",
+            &with_memory(),
         );
-        assert_eq!(
-            classify_entry("claude/projects/c--foo/session.jsonl", &with_memory()),
-            Classification::Exclude
-        );
+        assert_excluded("claude/projects/c--foo/session.jsonl", &with_memory());
+        assert!(!should_descend(
+            "claude/projects/c--foo/todos",
+            &with_memory()
+        ));
     }
 
     #[test]
     fn a_memory_directory_outside_projects_is_not_mistaken_for_a_memory_store() {
-        assert_eq!(
-            classify_entry("claude/skills/memory/SKILL.md", &with_memory()),
-            Classification::Include
-        );
-        assert_eq!(
-            classify_entry("claude/cache/memory/blob", &with_memory()),
-            Classification::Exclude
-        );
+        assert_included("claude/skills/memory/SKILL.md", &with_memory());
+        assert_excluded("claude/cache/memory/blob", &with_memory());
     }
 
     #[test]
     fn an_archive_is_not_swept_into_the_next_backup() {
-        assert_eq!(
-            classify_entry("claude/tools/claude-sync-host-20260819.zip", &defaults()),
-            Classification::Exclude
-        );
-        assert_eq!(
-            classify_entry("claude/backups/pre-restore-20260819.zip", &defaults()),
-            Classification::Exclude
-        );
+        assert_excluded("claude/tools/claude-sync-host-20260819.zip", &defaults());
+        assert_excluded("claude/backups/pre-restore-20260819.zip", &defaults());
     }
 
     #[test]
     fn an_unknown_top_level_file_is_excluded_rather_than_guessed() {
-        assert_eq!(
-            classify_entry("claude/some-future-cache.bin", &defaults()),
-            Classification::Exclude
-        );
+        assert_excluded("claude/some-future-cache.bin", &defaults());
     }
 
     #[test]
@@ -390,5 +401,26 @@ mod tests {
             classify_entry(r"claude\hooks\load-repo-rules.mjs", &defaults()),
             Classification::Include
         );
+        assert!(should_descend(r"claude\hooks", &defaults()));
+    }
+
+    // The pruning half of the walk. Nothing below these can ever be carried, and opening them
+    // anyway is what made a backup stat 15k entries to collect 68 files.
+    #[test]
+    fn generated_state_directories_are_never_opened() {
+        for dir in [
+            "claude/plugins/cache",
+            "claude/plugins/repos",
+            "claude/plugins/marketplaces",
+            "claude/projects",
+            "claude/shell-snapshots",
+            "claude/file-history",
+            "claude/todos",
+            "claude/statsig",
+            "claude/backups",
+            "downloads",
+        ] {
+            assert!(!should_descend(dir, &defaults()), "{dir}");
+        }
     }
 }
