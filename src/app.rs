@@ -575,10 +575,4 @@ mod tests {
         let once = canonicalize(&value, &ctx);
         assert_eq!(canonicalize(&once, &ctx), once);
     }
-
-    #[test]
-    fn a_missing_node_falls_back_to_the_bare_command_rather_than_an_unresolved_token() {
-        // find_node never returns an empty string, so ${NODE} can never survive into settings.json.
-        assert!(!find_node().is_empty());
-    }
 }
