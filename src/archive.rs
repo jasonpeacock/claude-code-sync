@@ -12,21 +12,21 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub const MANIFEST: &str = "manifest.json";
 pub const ARCHIVE_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct LinkRecord {
     pub path: String,
     /// Tokenized, so it re-points at the target machine's home on restore.
     pub target: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct FileRecord {
     pub path: String,
     pub sha256: String,
     pub size: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub tool: String,

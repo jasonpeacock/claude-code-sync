@@ -6,7 +6,7 @@
 
 use crate::paths::forward_slashes;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct BackupOptions {
     /// Carry `projects/<project>/memory/`, which is distilled by hand and never regenerates.
     pub with_memory: bool,
@@ -17,16 +17,6 @@ pub struct BackupOptions {
     /// The allowlist cannot know about every plugin's marker file or a directory that does not
     /// exist yet, so this is the escape hatch. A trailing `/` matches a whole subtree.
     pub extras: Vec<String>,
-}
-
-impl BackupOptions {
-    pub fn new(with_memory: bool, include_credentials: bool) -> Self {
-        Self {
-            with_memory,
-            include_credentials,
-            extras: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,13 +152,19 @@ mod tests {
     use super::*;
 
     fn defaults() -> BackupOptions {
-        BackupOptions::new(false, false)
+        BackupOptions::default()
     }
     fn with_memory() -> BackupOptions {
-        BackupOptions::new(true, false)
+        BackupOptions {
+            with_memory: true,
+            ..Default::default()
+        }
     }
-    fn with_creds() -> BackupOptions {
-        BackupOptions::new(false, true)
+    fn extras(list: &[&str]) -> BackupOptions {
+        BackupOptions {
+            extras: list.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -289,26 +285,30 @@ mod tests {
 
     #[test]
     fn credentials_are_included_only_behind_the_explicit_opt_in() {
+        let options = BackupOptions {
+            include_credentials: true,
+            ..Default::default()
+        };
         assert_eq!(
-            classify_entry("claude/.credentials.json", &with_creds()),
+            classify_entry("claude/.credentials.json", &options),
             Classification::Include
         );
     }
 
     #[test]
     fn an_extras_entry_cannot_smuggle_out_the_credentials_file() {
-        let mut options = defaults();
-        options.extras = vec!["claude/.credentials.json".into()];
         assert_eq!(
-            classify_entry("claude/.credentials.json", &options),
+            classify_entry(
+                "claude/.credentials.json",
+                &extras(&["claude/.credentials.json"])
+            ),
             Classification::Secret
         );
     }
 
     #[test]
     fn an_extras_entry_carries_a_file_the_allowlist_would_have_dropped() {
-        let mut options = defaults();
-        options.extras = vec!["claude/history.jsonl".into()];
+        let options = extras(&["claude/history.jsonl"]);
         assert_eq!(
             classify_entry("claude/history.jsonl", &options),
             Classification::Include
@@ -321,8 +321,7 @@ mod tests {
 
     #[test]
     fn an_extras_entry_ending_in_a_slash_carries_the_whole_subtree() {
-        let mut options = defaults();
-        options.extras = vec!["claude/context-mode/".into()];
+        let options = extras(&["claude/context-mode/"]);
         assert_eq!(
             classify_entry("claude/context-mode/index.db", &options),
             Classification::Include
