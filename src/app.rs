@@ -75,8 +75,8 @@ pub fn current_context() -> Result<PathContext> {
 }
 
 /// The two roots an archive carries, keyed by their prefix inside it.
-fn roots(home: &Path) -> Vec<(&'static str, PathBuf)> {
-    vec![
+fn roots(home: &Path) -> [(&'static str, PathBuf); 2] {
+    [
         ("claude", home.join(".claude")),
         ("agents", home.join(".agents")),
     ]
@@ -132,14 +132,8 @@ fn walk(root: &Path, prefix: &str, ctx: &PathContext, options: &BackupOptions) -
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let mut entries: Vec<_> = fs::read_dir(&dir)
-            .map_err(at(&dir))?
-            .collect::<std::io::Result<_>>()
-            .map_err(at(&dir))?;
-        entries.sort_by_key(|e| e.file_name());
-
-        for entry in entries {
-            let absolute = entry.path();
+        for entry in fs::read_dir(&dir).map_err(at(&dir))? {
+            let absolute = entry.map_err(at(&dir))?.path();
             let relative = absolute.strip_prefix(root).unwrap_or(&absolute);
             let archive_path = format!("{prefix}/{}", forward_slashes(&relative.to_string_lossy()));
             let metadata = fs::symlink_metadata(&absolute).map_err(at(&absolute))?;
@@ -169,6 +163,7 @@ fn walk(root: &Path, prefix: &str, ctx: &PathContext, options: &BackupOptions) -
         }
     }
 
+    // Sorted globally rather than per directory, so an archive is byte-stable across runs.
     found.files.sort_by(|a, b| a.0.cmp(&b.0));
     found.links.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(found)
