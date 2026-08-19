@@ -114,7 +114,7 @@ fn stamp(now: &chrono::DateTime<chrono::Local>) -> String {
 /// `{:.1}` on an f64 is the only float formatting in the whole tool and it costs about 9 KB,
 /// because it links both of core's float-to-decimal paths for one cosmetic line.
 fn kilobytes(bytes: usize) -> String {
-    let tenths = (bytes * 10 + 512) / 1024;
+    let tenths = (bytes as u64 * 10 + 512) / 1024;
     format!("{}.{}", tenths / 10, tenths % 10)
 }
 
@@ -182,8 +182,7 @@ fn run() -> Result<i32> {
                 .unwrap_or(std::env::current_dir()?);
             std::fs::create_dir_all(&directory)
                 .map_err(|e| format!("{}: {e}", directory.display()))?;
-            let name = format!("claude-sync-{host}-{}.zip", stamp(&now));
-            let out = directory.join(name);
+            let out = directory.join(format!("claude-sync-{host}-{}.zip", stamp(&now)));
             std::fs::write(&out, &archive).map_err(|e| format!("{}: {e}", out.display()))?;
 
             println!(
