@@ -1,5 +1,6 @@
 //! Walking the filesystem, building an archive, and putting one back.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -333,9 +334,8 @@ pub fn restore(
             continue;
         };
 
-        let mut data = entry.data.clone();
-        if entry.path == SETTINGS {
-            let archived: serde_json::Value = serde_json::from_slice(&data)
+        let data: Cow<[u8]> = if entry.path == SETTINGS {
+            let archived: serde_json::Value = serde_json::from_slice(&entry.data)
                 .map_err(|e| format!("{SETTINGS} inside the archive: {e}"))?;
             let incoming = map_strings(&archived, &|s| resolve_path(s, &ctx));
             let existing = if absolute.exists() {
@@ -347,17 +347,16 @@ pub fn restore(
                 serde_json::json!({})
             };
             let merged = merge_settings(&existing, &incoming, options.strategy, options.resolve);
-            data = format!("{}\n", serde_json::to_string_pretty(&merged)?).into_bytes();
-        }
+            Cow::Owned(format!("{}\n", serde_json::to_string_pretty(&merged)?).into_bytes())
+        } else {
+            Cow::Borrowed(&entry.data)
+        };
         let data = denormalize_for_disk(&data, eol);
 
+        let existed = absolute.exists();
         actions.push(format!(
             "{}  {}",
-            if absolute.exists() {
-                "update"
-            } else {
-                "create"
-            },
+            if existed { "update" } else { "create" },
             entry.path
         ));
         if options.dry_run {
