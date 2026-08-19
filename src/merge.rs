@@ -43,7 +43,6 @@ pub struct Conflict {
     pub incoming: Value,
 }
 
-/// Union preserving local order, appending incoming entries not already present.
 fn union_arrays(existing: &[Value], incoming: &[Value]) -> Value {
     let mut merged = existing.to_vec();
     for item in incoming {
@@ -120,8 +119,7 @@ fn child_path(parent: &str, key: &str) -> String {
     }
 }
 
-/// Merge two settings trees. `resolve` is consulted only under [`MergeStrategy::Ask`], and only
-/// for genuine conflicts.
+/// `resolve` is consulted only under [`MergeStrategy::Ask`], and only for genuine conflicts.
 pub fn merge_settings(
     existing: &Value,
     incoming: &Value,

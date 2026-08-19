@@ -6,7 +6,6 @@ const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 const NUL: u8 = 0;
 
-/// How many leading bytes to sniff when deciding whether a file is binary.
 const SNIFF_BYTES: usize = 8000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +15,6 @@ pub enum LineEnding {
 }
 
 impl LineEnding {
-    /// What the machine running this build writes.
     pub fn native() -> Self {
         if cfg!(windows) {
             Self::Crlf
@@ -26,14 +24,14 @@ impl LineEnding {
     }
 }
 
-/// A NUL byte in the first few KB means binary. This is the heuristic git uses, and it keeps
-/// UTF-8 text with emoji or typographic punctuation on the text side where it belongs.
+/// A NUL byte in the first few KB means binary: the heuristic git uses. Anything stricter puts
+/// UTF-8 text with emoji or typographic punctuation on the binary side, where it stops being
+/// line-ending normalized at all.
 pub fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(SNIFF_BYTES).any(|b| *b == NUL)
 }
 
-/// Collapse CRLF and lone CR to LF. UTF-8 is ASCII-transparent, so working at the byte level
-/// cannot split a multi-byte character.
+/// UTF-8 is ASCII-transparent, so working at the byte level cannot split a multi-byte character.
 fn to_lf(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -62,7 +60,6 @@ fn to_crlf(lf_bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Archives always store LF, so one archive restores correctly onto any OS.
 pub fn normalize_for_archive(bytes: &[u8]) -> Vec<u8> {
     if is_binary(bytes) {
         return bytes.to_vec();
@@ -70,7 +67,7 @@ pub fn normalize_for_archive(bytes: &[u8]) -> Vec<u8> {
     to_lf(bytes)
 }
 
-/// Rewrite to the target's line ending. Normalizes first, so it never double-converts.
+/// Normalizes first, so restoring an already-CRLF buffer never double-converts it.
 pub fn denormalize_for_disk(bytes: &[u8], eol: LineEnding) -> Vec<u8> {
     if is_binary(bytes) {
         return bytes.to_vec();

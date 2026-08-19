@@ -92,10 +92,8 @@ impl Args {
     }
 }
 
-/// `%Y%m%d-%H%M%S`, written out rather than handed to `strftime`.
-///
-/// chrono's strftime parser is a runtime interpreter, so asking it for one format string that
-/// never changes links about 9 KB of parsing machinery into the binary. Local time is unchanged.
+/// CRITICAL: hand-formatted on purpose. chrono's strftime is a runtime interpreter, so handing
+/// it one format string that never changes links about 9 KB of parsing machinery into the binary.
 fn stamp(now: &chrono::DateTime<chrono::Local>) -> String {
     use chrono::{Datelike, Timelike};
     format!(
@@ -109,10 +107,8 @@ fn stamp(now: &chrono::DateTime<chrono::Local>) -> String {
     )
 }
 
-/// Size in KB to one decimal, in integer arithmetic.
-///
-/// `{:.1}` on an f64 is the only float formatting in the whole tool and it costs about 9 KB,
-/// because it links both of core's float-to-decimal paths for one cosmetic line.
+/// CRITICAL: integer arithmetic on purpose. `{:.1}` would be the only float formatting in the
+/// tool, and it links both of core's float-to-decimal paths, about 9 KB, for one cosmetic line.
 fn kilobytes(bytes: usize) -> String {
     let tenths = (bytes as u64 * 10 + 512) / 1024;
     format!("{}.{}", tenths / 10, tenths % 10)
@@ -288,8 +284,8 @@ fn main() {
 mod tests {
     use super::*;
 
-    // Both helpers exist to keep a formatting path out of the binary, so what they must prove is
-    // that they still print what the thing they replaced printed.
+    // Both helpers exist only to keep a formatting path out of the binary, so what they have to
+    // prove is that they still print what the thing they replaced printed.
 
     #[test]
     fn kilobytes_matches_one_decimal_place() {

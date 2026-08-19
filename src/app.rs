@@ -1,5 +1,3 @@
-//! Walking the filesystem, building an archive, and putting one back.
-
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
@@ -32,10 +30,8 @@ pub fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| "could not determine the home directory".into())
 }
 
-/// Read `~/.claude/.claude-sync-include`, the escape hatch for anything the allowlist misses.
-///
 /// One archive-relative path per line, `#` for comments, a trailing `/` for a whole subtree.
-/// Missing file means no extras, which is the normal case.
+/// A missing file means no extras, which is the normal case.
 pub fn read_include_list() -> Vec<String> {
     let Ok(home) = home_dir() else {
         return Vec::new();
@@ -52,8 +48,6 @@ pub fn read_include_list() -> Vec<String> {
         .collect()
 }
 
-/// Where node lives on this machine, so hook commands survive the trip.
-///
 /// Falling back to a bare `node` is deliberate: an unresolved `${NODE}` would be written into
 /// settings.json verbatim and the hook would never run, whereas `node` resolves via PATH.
 pub fn find_node() -> String {
@@ -76,7 +70,6 @@ pub fn current_context() -> Result<PathContext> {
     })
 }
 
-/// The two roots an archive carries, keyed by their prefix inside it.
 fn roots(home: &Path) -> [(&'static str, PathBuf); 2] {
     [
         ("claude", home.join(".claude")),
@@ -95,10 +88,10 @@ fn at(path: &Path) -> impl Fn(std::io::Error) -> Box<dyn std::error::Error> + '_
 
 /// Refuse an archive path that could write outside the two restore roots.
 ///
-/// A zip is an untrusted input. Left unchecked, an entry named `claude/../../.bashrc` is joined
-/// straight onto the home directory and lands outside it, so the check is on the path components
-/// rather than on the joined result: `..`, an absolute segment and a drive letter are all refused,
-/// in either separator style, whichever OS wrote the archive.
+/// CRITICAL: a zip is untrusted input. Left unchecked, an entry named `claude/../../.bashrc` is
+/// joined straight onto the home directory and lands outside it, so the check is on the path
+/// components rather than on the joined result: `..`, an absolute segment and a drive letter are
+/// all refused, in either separator style, whichever OS wrote the archive.
 fn check_safe(archive_path: &str) -> Result<()> {
     let bad = archive_path.split(['/', '\\']).any(|part| {
         part.is_empty()
@@ -218,7 +211,6 @@ pub fn backup(
     Ok((crate::archive::write_zip(&all)?, manifest))
 }
 
-/// Apply a transform to every string in a JSON tree, leaving structure and key order untouched.
 pub fn map_strings(value: &serde_json::Value, f: &dyn Fn(&str) -> String) -> serde_json::Value {
     use serde_json::Value;
     match value {
@@ -235,11 +227,11 @@ pub fn map_strings(value: &serde_json::Value, f: &dyn Fn(&str) -> String) -> ser
 
 /// Spell this machine's own paths the way a restored value spells them.
 ///
-/// Merging compares strings, so a local `"C:\Users\you\.claude\hooks\x.mjs"` and the restored
-/// `"C:/Users/you/.claude/hooks/x.mjs"` are two different entries and the union appends the
-/// second one. Round-tripping the local side through the same tokenize-then-resolve the incoming
-/// side already went through collapses the pair. Values holding no path are returned untouched,
-/// which is what the tokenizer's byte-for-byte guarantee buys.
+/// CRITICAL: merging compares strings, so a local `"C:\Users\you\.claude\hooks\x.mjs"` and the
+/// restored `"C:/Users/you/.claude/hooks/x.mjs"` are two different entries and the union appends
+/// the second one, leaving the stale hook listed and firing. Round-tripping the local side
+/// through the same tokenize-then-resolve the incoming side already went through collapses the
+/// pair. Values holding no path come back untouched, which is the tokenizer's guarantee.
 pub fn canonicalize(value: &serde_json::Value, ctx: &PathContext) -> serde_json::Value {
     map_strings(value, &|s| resolve_path(&tokenize_path(s, ctx), ctx))
 }
@@ -279,11 +271,8 @@ pub fn settings_conflicts(entries: &[Entry]) -> Result<Vec<Conflict>> {
     ))
 }
 
-/// Check every entry and link before the first byte is written.
-///
-/// An archive can arrive from anywhere, so it is untrusted input rather than this tool's own
-/// output. Running as one pass up front is what keeps a rejected archive from leaving a half
-/// applied config behind: nothing is written until all of it has passed.
+/// CRITICAL: every entry and link is checked before the first byte is written. Validating in one
+/// pass up front is what keeps a rejected archive from leaving a half applied config behind.
 fn vet(entries: &[Entry], manifest: &Manifest) -> Result<()> {
     let recorded: HashMap<&str, &str> = manifest
         .files
@@ -414,7 +403,8 @@ pub fn restore(
             fs::create_dir_all(parent).map_err(at(parent))?;
         }
         if let Err(error) = create_link(Path::new(&target), &absolute) {
-            // Windows without developer mode cannot create links; a real copy is the honest fallback.
+            // Windows without developer mode cannot create links; a real copy is the honest
+            // fallback, and a missing source is worth saying out loud rather than failing.
             let source = Path::new(&target);
             if source.exists() {
                 copy_tree(source, &absolute)?;

@@ -1,8 +1,8 @@
 //! Deciding what goes into an archive.
 //!
 //! An allowlist, not a denylist: anything unrecognised is excluded, so a cache directory added
-//! in a future Claude Code release costs nothing. The cost of that choice is that genuinely
-//! authored files can be missed, which is what `extras` and the dotfile rule below exist for.
+//! in a future Claude Code release costs nothing. The price is that genuinely authored files can
+//! be missed, which is what `extras` and the dotfile rule below exist for.
 
 use crate::paths::forward_slashes;
 
@@ -13,9 +13,7 @@ pub struct BackupOptions {
     /// Carry `.credentials.json`. Off unless asked for: the archive is meant to travel.
     pub include_credentials: bool,
     /// Extra archive-relative paths from `~/.claude/.claude-sync-include`, one per line.
-    ///
-    /// The allowlist cannot know about every plugin's marker file or a directory that does not
-    /// exist yet, so this is the escape hatch. A trailing `/` matches a whole subtree.
+    /// A trailing `/` matches a whole subtree.
     pub extras: Vec<String>,
 }
 
@@ -66,7 +64,6 @@ const CREDENTIALS: &str = "claude/.credentials.json";
 /// The file that supplies [`BackupOptions::extras`], carried so the list travels with the archive.
 pub const INCLUDE_LIST: &str = ".claude-sync-include";
 
-/// Is this `projects/<something>/memory/...`?
 fn is_memory_path(rest: &str) -> bool {
     let mut parts = rest.split('/');
     parts.next() == Some("projects")
@@ -75,7 +72,6 @@ fn is_memory_path(rest: &str) -> bool {
         && parts.next().is_some()
 }
 
-/// A user-listed extra matches a path outright, or a whole subtree when it ends in `/`.
 fn matches_extra(path: &str, extras: &[String]) -> bool {
     extras.iter().any(|extra| {
         let extra = extra.trim();
@@ -98,7 +94,6 @@ fn extra_reaches_into(dir: &str, extra: &str) -> bool {
             || dir.starts_with(&format!("{extra}/")))
 }
 
-/// Decide what happens to one archive-relative path.
 pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification {
     let path = forward_slashes(rel_path);
 
@@ -138,7 +133,6 @@ pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification
     }
 
     match rest.split_once('/') {
-        // Everything under plugins/ is a checkout or a cache except a few small state files.
         Some(("plugins", tail)) => {
             if PLUGIN_FILES.contains(&tail) {
                 Classification::Include
@@ -160,7 +154,7 @@ pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification
 ///
 /// CRITICAL: this must stay in step with [`classify_entry`]. A directory refused here is never
 /// opened, so a rule that includes a file whose parent is pruned drops that file silently, with
-/// no error anywhere. `assert_included` in the tests below guards the pairing.
+/// no error anywhere. `every included path is reachable` in the tests below guards the pairing.
 pub fn should_descend(dir_path: &str, options: &BackupOptions) -> bool {
     let path = forward_slashes(dir_path);
 
@@ -280,7 +274,6 @@ mod tests {
 
     #[test]
     fn a_plugin_feature_marker_dotfile_is_carried() {
-        // Losing one of these silently changes behavior after a restore.
         assert_included("claude/.i-have-adhd-always", &defaults());
         assert_included("claude/.claude-sync-include", &defaults());
     }

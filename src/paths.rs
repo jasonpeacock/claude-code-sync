@@ -36,8 +36,6 @@ fn separator_follows(next: Option<char>) -> bool {
     matches!(next, Some(c) if c.is_alphanumeric() || c == '_' || c == '.' || c == '-')
 }
 
-/// Consume the path that follows a matched prefix, normalizing its separators.
-///
 /// Returns the rewritten run and how many bytes of `rest` it covered. The run stops at a quote
 /// or whitespace, so the remainder of a command string is never touched.
 fn normalize_run(rest: &str) -> (String, usize) {
@@ -104,16 +102,15 @@ fn replace_prefix(input: &str, needle: &str, token: &str) -> String {
     out
 }
 
-/// Rewrite machine-specific absolute paths into portable tokens.
+/// Accepts a bare path or a whole command string containing several.
 ///
-/// Accepts a bare path or a whole command string containing several. The node binary is
-/// substituted first so a node installed under the home directory still resolves to `${NODE}`.
+/// CRITICAL: the node binary is substituted first, so a node installed under the home directory
+/// still resolves to `${NODE}` rather than to a `${HOME}` path that does not exist on the target.
 pub fn tokenize_path(input: &str, ctx: &PathContext) -> String {
     let with_node = replace_prefix(input, &ctx.node, NODE_TOKEN);
     replace_prefix(&with_node, &ctx.home, HOME_TOKEN)
 }
 
-/// Expand portable tokens against the machine being restored onto.
 pub fn resolve_path(input: &str, ctx: &PathContext) -> String {
     input
         .replace(NODE_TOKEN, &forward_slashes(&ctx.node))
