@@ -83,7 +83,9 @@ pub fn read_zip(bytes: Vec<u8>) -> Result<Vec<Entry>> {
             continue;
         }
         let path = file.name().to_string();
-        let mut data = Vec::with_capacity(file.size() as usize);
+        // CRITICAL: the size is the archive's own claim about itself. Preallocating it verbatim
+        // lets one header field ask for an arbitrary allocation, so it is capped to a hint.
+        let mut data = Vec::with_capacity(file.size().min(1 << 20) as usize);
         file.read_to_end(&mut data)?;
         entries.push(Entry { path, data });
     }
