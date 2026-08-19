@@ -132,19 +132,22 @@ fn walk(root: &Path, prefix: &str, ctx: &PathContext, options: &BackupOptions) -
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let mut entries: Vec<_> = fs::read_dir(&dir)?.collect::<std::io::Result<_>>()?;
+        let mut entries: Vec<_> = fs::read_dir(&dir)
+            .map_err(at(&dir))?
+            .collect::<std::io::Result<_>>()
+            .map_err(at(&dir))?;
         entries.sort_by_key(|e| e.file_name());
 
         for entry in entries {
             let absolute = entry.path();
             let relative = absolute.strip_prefix(root).unwrap_or(&absolute);
             let archive_path = format!("{prefix}/{}", forward_slashes(&relative.to_string_lossy()));
-            let metadata = fs::symlink_metadata(&absolute)?;
+            let metadata = fs::symlink_metadata(&absolute).map_err(at(&absolute))?;
 
             if metadata.is_symlink() {
                 // Store the link, never its contents: the target lives elsewhere in the archive.
                 if classify_entry(&archive_path, options) == Classification::Include {
-                    let target = fs::read_link(&absolute)?;
+                    let target = fs::read_link(&absolute).map_err(at(&absolute))?;
                     found.links.push(LinkRecord {
                         path: archive_path,
                         target: tokenize_path(&forward_slashes(&target.to_string_lossy()), ctx),
