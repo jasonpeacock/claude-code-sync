@@ -1,5 +1,6 @@
 //! Walking the filesystem, building an archive, and putting one back.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -248,23 +249,29 @@ pub fn canonicalize(value: &serde_json::Value, ctx: &PathContext) -> serde_json:
 /// output. Running as one pass up front is what keeps a rejected archive from leaving a half
 /// applied config behind: nothing is written until all of it has passed.
 fn vet(entries: &[Entry], manifest: &Manifest) -> Result<()> {
+    let recorded: HashMap<&str, &str> = manifest
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.sha256.as_str()))
+        .collect();
+
     for entry in entries {
         if entry.path == MANIFEST {
             continue;
         }
         check_safe(&entry.path)?;
 
-        // The manifest is the authority on what an archive may write. An entry that is not listed
-        // there, or whose bytes do not match the hash recorded for it, was added after the archive
-        // was written, so the restore stops rather than the entry being quietly skipped.
-        let Some(record) = manifest.files.iter().find(|f| f.path == entry.path) else {
+        // The manifest is the authority on what an archive may write. An entry not listed there,
+        // or whose bytes do not match the hash recorded for it, was added after the archive was
+        // written, so the restore stops rather than the entry being quietly skipped.
+        let Some(sha256) = recorded.get(entry.path.as_str()) else {
             return Err(format!(
                 "archive entry is not listed in manifest.json, refusing to restore: {}",
                 entry.path
             )
             .into());
         };
-        if sha256_hex(&entry.data) != record.sha256 {
+        if sha256_hex(&entry.data) != *sha256 {
             return Err(format!(
                 "archive entry does not match its manifest hash, refusing to restore: {}",
                 entry.path
