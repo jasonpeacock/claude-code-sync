@@ -18,6 +18,15 @@ use crate::paths::{forward_slashes, resolve_path, tokenize_path, PathContext};
 /// The only file whose contents are machine-specific.
 const SETTINGS: &str = "claude/settings.json";
 
+/// JSON files whose strings hold this machine's paths. settings.json is also merged; the rest
+/// replace the local copy, with paths respelled for the machine restoring them.
+const TOKENIZED: &[&str] = &[
+    SETTINGS,
+    "claude/settings.local.json",
+    "claude/plugins/installed_plugins.json",
+    "claude/plugins/known_marketplaces.json",
+];
+
 /// Overrides the home directory this tool reads and writes.
 ///
 /// On Windows the home directory comes from a Win32 known-folder lookup, not from `USERPROFILE`,
@@ -83,9 +92,15 @@ pub fn find_node() -> String {
 }
 
 pub fn current_context() -> Result<PathContext> {
+    let home = home_dir()?;
+    let spell = |path: &Path| forward_slashes(path.to_string_lossy().trim_end_matches(['/', '\\']));
+    let real_home = resolve_real(&home)
+        .map(|real| spell(&real))
+        .filter(|real| *real != spell(&home));
     Ok(PathContext {
-        home: forward_slashes(home_dir()?.to_string_lossy().trim_end_matches(['/', '\\'])),
+        home: spell(&home),
         node: find_node(),
+        real_home,
     })
 }
 
@@ -572,7 +587,7 @@ fn pack(
     lenient: bool,
 ) -> Result<Vec<u8>> {
     let data = normalize_for_archive(raw);
-    if archive_path != SETTINGS {
+    if !TOKENIZED.contains(&archive_path) {
         return Ok(data);
     }
     match serde_json::from_slice::<serde_json::Value>(strip_bom(&data)) {
@@ -580,7 +595,10 @@ fn pack(
             let tokenized = map_strings(&parsed, &|s| tokenize_path(s, ctx));
             Ok(format!("{}\n", serde_json::to_string_pretty(&tokenized)?).into_bytes())
         }
-        Err(error) if !lenient => Err(format!("{}: {error}", absolute.display()).into()),
+        // Only settings.json is merged on restore, so only it has to parse.
+        Err(error) if !lenient && archive_path == SETTINGS => {
+            Err(format!("{}: {error}", absolute.display()).into())
+        }
         Err(error) => {
             eprintln!(
                 "  {} is not valid JSON ({error}); carried as is, paths not rewritten, and only \
@@ -1010,6 +1028,18 @@ pub fn restore(
                 options.resolve,
             );
             Cow::Owned(format!("{}\n", serde_json::to_string_pretty(&merged)?).into_bytes())
+        } else if TOKENIZED.contains(&entry.path.as_str()) {
+            // Written whole, as before, with this machine's paths. One that does not parse was
+            // carried as it was, and is written as it is.
+            match serde_json::from_slice::<serde_json::Value>(strip_bom(&entry.data)) {
+                Ok(parsed) => {
+                    let resolved = map_strings(&parsed, &|s| resolve_path(s, &ctx));
+                    Cow::Owned(
+                        format!("{}\n", serde_json::to_string_pretty(&resolved)?).into_bytes(),
+                    )
+                }
+                Err(_) => Cow::Borrowed(&entry.data),
+            }
         } else {
             Cow::Borrowed(&entry.data)
         };
@@ -1423,6 +1453,7 @@ mod tests {
         let ctx = PathContext {
             home: "C:/Users/Ehsan".into(),
             node: "C:/Program Files/nodejs/node.exe".into(),
+            real_home: None,
         };
         let local = serde_json::json!({
             "hooks": [r"C:\Users\Ehsan\.claude\hooks\x.mjs"],
@@ -1441,6 +1472,7 @@ mod tests {
         let ctx = PathContext {
             home: "/home/dev".into(),
             node: "/usr/bin/node".into(),
+            real_home: None,
         };
         let value = serde_json::json!({ "a": "/home/dev/.claude/hooks/x.mjs", "b": "plain" });
         let once = canonicalize(&value, &ctx);

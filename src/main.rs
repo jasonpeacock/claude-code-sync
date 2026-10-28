@@ -25,6 +25,7 @@ Merge strategies, applied to settings.json only:
 
 Always carried:  CLAUDE.md, settings.json, settings.local.json, keybindings.json,
                  agents/, commands/, hooks/, skills/, output-styles/, tools/,
+                 rules/, statuslines/, themes/,
                  plugin version pins, root-level feature-marker dotfiles,
                  and the whole ~/.agents skill source tree.
 Never carried:   transcripts, plugin checkouts, caches, telemetry, session state.

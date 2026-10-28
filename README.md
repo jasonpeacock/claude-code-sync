@@ -113,7 +113,7 @@ Under every strategy except `replace`, objects merge key by key and arrays are u
 | Carried | Why |
 |---|---|
 | `CLAUDE.md`, `settings.json`, `settings.local.json`, `keybindings.json` | Authored by you |
-| `agents/ commands/ hooks/ skills/ output-styles/ tools/` | Authored by you |
+| `agents/ commands/ hooks/ skills/ output-styles/ tools/ rules/ statuslines/ themes/` | Authored by you |
 | `plugins/installed_plugins.json`, `known_marketplaces.json`, `blocklist.json` | Version and commit pins. `settings.json` records only which plugins are on, not which version, so without these a restore drifts to latest |
 | Root-level dotfiles such as `.i-have-adhd-always` | Feature markers set by plugins. Tiny, unpredictable, and losing one silently changes behavior |
 | `~/.agents/skills/` and `.skill-lock.json` | The real skill sources, when `~/.claude/skills/` symlinks into them |
@@ -122,6 +122,7 @@ Under every strategy except `replace`, objects merge key by key and arrays are u
 | Left behind | Why |
 |---|---|
 | `projects/*.jsonl` transcripts | Regenerated, and large |
+| `*.tmp`, `*.tmp-*`, `*.swp` scratch files | Half-written by editors and tools; restoring one recreates the debris |
 | `plugins/cache/ repos/ marketplaces/`, `plugin-catalog-cache.json` | Re-downloaded from the pins above |
 | `security/ cache/ file-history/ shell-snapshots/ sessions/ debug/ telemetry/` | Derived state |
 | `.last-cleanup`, `.last-update-result.json` | Tool state, not your choices |
@@ -234,7 +235,7 @@ cargo build --release
 cargo test
 ```
 
-80 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
+83 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
 
 ## License
 

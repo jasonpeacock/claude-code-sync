@@ -33,6 +33,9 @@ const PORTABLE_DIRS: &[&str] = &[
     "skills",
     "tools",
     "output-styles",
+    "rules",
+    "statuslines",
+    "themes",
 ];
 
 /// Individual files at the root of `~/.claude` worth carrying.
@@ -85,6 +88,15 @@ fn matches_extra(path: &str, extras: &[String]) -> bool {
     })
 }
 
+fn is_scratch(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".tmp")
+        || lower.contains(".tmp-")
+        || lower.ends_with(".swp")
+        || lower.ends_with(".swo")
+        || lower.contains(".ccs-")
+}
+
 /// Has the user's include list asked for something at, above, or below this directory?
 pub fn named_by_extras(dir: &str, options: &BackupOptions) -> bool {
     let path = forward_slashes(dir);
@@ -124,6 +136,12 @@ pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification
 
     // Archives this tool writes must never be swept into the next one.
     if path.to_lowercase().ends_with(".zip") {
+        return Classification::Exclude;
+    }
+
+    // Editor and tool scratch files: a half-written `.settings.json.tmp-<pid>-0` or a swap
+    // file is never config, and restoring one recreates the debris on the other machine.
+    if is_scratch(name) {
         return Classification::Exclude;
     }
 
@@ -258,8 +276,23 @@ mod tests {
             "claude/skills/lean-orchestration/SKILL.md",
             "claude/output-styles/terse.md",
             "claude/tools/helper.ts",
+            "claude/rules/inclusive-language.md",
+            "claude/statuslines/statusline-cyberpunk.sh",
+            "claude/themes/dark.json",
         ] {
             assert_included(path, &defaults());
+        }
+    }
+
+    #[test]
+    fn scratch_files_are_never_carried() {
+        for path in [
+            "claude/.settings.json.tmp-14935-0",
+            "claude/hooks/x.mjs.tmp",
+            "claude/skills/k/.SKILL.md.swp",
+            "claude/.CLAUDE.md.ccs-1234",
+        ] {
+            assert_excluded(path, &defaults());
         }
     }
 

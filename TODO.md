@@ -90,24 +90,28 @@ Mark an item `[x]` when it is fixed, and note how.
 - [x] **B11. A `settings.json` that starts with a UTF-8 BOM** makes backup and restore fail.
   Fixed: `strip_bom` before every parse.
 - [ ] **B12. Manifest records the archive format version, not the tool version.**
-- [ ] **B13. `rules/`, `statuslines/` and `themes/` are not carried.** They are authored config, and
+- [x] **B13. `rules/`, `statuslines/` and `themes/` are not carried.** They are authored config, and
   `settings.json` can reference a statusline script by path, so the restored statusline breaks.
   Found on a real `~/.claude` (2026-10-28). (`src/classify.rs` PORTABLE_DIRS)
-- [ ] **B14. The root-dotfile rule carries stale temp files** such as `.settings.json.tmp-<pid>-0`
+  Fixed: carried as authored directories.
+- [x] **B14. The root-dotfile rule carries stale temp files** such as `.settings.json.tmp-<pid>-0`
   (a truncated settings write), and restore recreates them on the target. (`src/classify.rs`)
+  Fixed: `*.tmp`, `*.tmp-*`, `*.swp`, `*.swo` and this tool's own `.ccs-` temp files are never carried.
 
 ## Path rewriting
 
-- [ ] **P1. Only `settings.json` is rewritten.** `settings.local.json`, `installed_plugins.json`
+- [x] **P1. Only `settings.json` is rewritten.** `settings.local.json`, `installed_plugins.json`
   and `known_marketplaces.json` keep the source machine's absolute paths and overwrite the local
   files whole. (`src/app.rs` SETTINGS)
+  Fixed: `settings.local.json`, `installed_plugins.json` and `known_marketplaces.json` are tokenized on backup and respelled on restore (`TOKENIZED`). They still replace the local copy rather than merge.
 - [ ] **P2. `${NODE}`/`${HOME}` are expanded without quoting**, so a Unix hook restored on Windows
   splits at the space in `C:/Program Files`. (`src/paths.rs` resolve_path)
-- [ ] **P3. Prefix matching has no left boundary**, so the home or node prefix is replaced inside
+- [x] **P3. Prefix matching has no left boundary**, so the home or node prefix is replaced inside
   unrelated longer paths. (`src/paths.rs`)
   Seen on a real config: with `$HOME=/home/u` reached via `/home/u -> /local/home/u`,
   `/local/home/u/.aim/cc-plugins` became `/local${HOME}/.aim/cc-plugins`. Tokenizing should try
   the canonical home spelling too.
+  Fixed: a left boundary is required, and the resolved spelling of home (`PathContext.real_home`) is tokenized too.
 - [ ] **P4. Fallback `node = "node"` tokenizes every bare word "node"** into `${NODE}` when node
   is not on PATH. (`src/app.rs` find_node)
 - [ ] **P5. Windows homes in Claude Code's POSIX form** (`/c/Users/...`, `//c/Users/...`) are

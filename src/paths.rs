@@ -12,6 +12,10 @@ pub struct PathContext {
     pub home: String,
     /// Absolute path to the node binary, forward-slashed.
     pub node: String,
+    /// The home directory's other spelling, when it is reached through a symlink
+    /// (`/home/you -> /local/home/you`). Tools that resolve paths write that one, so both
+    /// become `${HOME}`.
+    pub real_home: Option<String>,
 }
 
 pub fn forward_slashes(input: &str) -> String {
@@ -24,6 +28,15 @@ fn is_boundary(byte: u8) -> bool {
         byte,
         b'/' | b'\\' | b'"' | b'\'' | b' ' | b'\t' | b'\r' | b'\n'
     )
+}
+
+/// A path inside a larger string legitimately starts after one of these. Anything else, a
+/// letter for one, means the match is the tail of a longer path: `/home/you` inside
+/// `/local/home/you` is not this home.
+fn starts_a_path(previous: Option<u8>) -> bool {
+    previous.map_or(true, |byte| {
+        !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.') || byte >= 0x80)
+    })
 }
 
 /// A backslash is a path separator only when what follows could start a path segment.
@@ -82,7 +95,11 @@ fn replace_prefix(input: &str, needle: &str, token: &str) -> String {
 
             // The boundary check is load-bearing: without it a home of `C:/Users/Ehsan` would
             // also swallow the unrelated `C:/Users/EhsanBackup`.
-            if matched && input.as_bytes().get(end).map_or(true, |b| is_boundary(*b)) {
+            let previous = cursor.checked_sub(1).map(|i| input.as_bytes()[i]);
+            if matched
+                && starts_a_path(previous)
+                && input.as_bytes().get(end).map_or(true, |b| is_boundary(*b))
+            {
                 out.push_str(token);
                 let (run, consumed) = normalize_run(&input[end..]);
                 out.push_str(&run);
@@ -107,8 +124,11 @@ fn replace_prefix(input: &str, needle: &str, token: &str) -> String {
 /// CRITICAL: the node binary is substituted first, so a node installed under the home directory
 /// still resolves to `${NODE}` rather than to a `${HOME}` path that does not exist on the target.
 pub fn tokenize_path(input: &str, ctx: &PathContext) -> String {
-    let with_node = replace_prefix(input, &ctx.node, NODE_TOKEN);
-    replace_prefix(&with_node, &ctx.home, HOME_TOKEN)
+    let mut out = replace_prefix(input, &ctx.node, NODE_TOKEN);
+    if let Some(real_home) = &ctx.real_home {
+        out = replace_prefix(&out, real_home, HOME_TOKEN);
+    }
+    replace_prefix(&out, &ctx.home, HOME_TOKEN)
 }
 
 pub fn resolve_path(input: &str, ctx: &PathContext) -> String {
@@ -128,13 +148,50 @@ mod tests {
         PathContext {
             home: "C:/Users/Ehsan".into(),
             node: "C:/Program Files/nodejs/node.exe".into(),
+            real_home: None,
         }
+    }
+
+    #[test]
+    fn a_home_inside_a_longer_path_is_not_this_home() {
+        let ctx = nix();
+        assert_eq!(
+            tokenize_path("/local/home/dev/.aim", &ctx),
+            "/local/home/dev/.aim"
+        );
+        assert_eq!(tokenize_path("x/home/dev/a", &ctx), "x/home/dev/a");
+        assert_eq!(tokenize_path("HOME=/home/dev/a", &ctx), "HOME=${HOME}/a");
+        assert_eq!(
+            tokenize_path("file:///home/dev/a", &ctx),
+            "file://${HOME}/a"
+        );
+    }
+
+    #[test]
+    fn both_spellings_of_a_symlinked_home_become_the_token() {
+        let ctx = PathContext {
+            real_home: Some("/local/home/dev".into()),
+            ..nix()
+        };
+        assert_eq!(
+            tokenize_path("/local/home/dev/.aim/x", &ctx),
+            "${HOME}/.aim/x"
+        );
+        assert_eq!(
+            tokenize_path("/home/dev/.claude/x", &ctx),
+            "${HOME}/.claude/x"
+        );
+        assert_eq!(
+            resolve_path(&tokenize_path("/local/home/dev/w", &ctx), &ctx),
+            "/home/dev/w"
+        );
     }
 
     fn nix() -> PathContext {
         PathContext {
             home: "/home/dev".into(),
             node: "/usr/bin/node".into(),
+            real_home: None,
         }
     }
 

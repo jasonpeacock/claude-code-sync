@@ -60,7 +60,13 @@ fn seed_source(home: &Path) {
     write(&claude.join("hooks/x.mjs"), "export default 1\n");
     write(&claude.join(".i-have-adhd-always"), "");
     write(&claude.join(".credentials.json"), r#"{"token":"secret"}"#);
-    write(&claude.join("plugins/installed_plugins.json"), "{}");
+    write(
+        &claude.join("plugins/installed_plugins.json"),
+        &format!(
+            r#"{{"plugins":{{"p":[{{"installPath":"{}/.claude/plugins/cache/p/1.0"}}]}}}}"#,
+            home.to_string_lossy().replace('\\', "/")
+        ),
+    );
     write(
         &claude.join("plugins/cache/some-plugin/1.0.0/SKILL.md"),
         "no",
@@ -159,6 +165,19 @@ fn a_config_survives_a_backup_and_a_restore_onto_a_different_machine() {
 
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(target.join(".claude/settings.json")).unwrap()).unwrap();
+
+    // Plugin pins name the plugin's install path, which has to move with the home too.
+    let plugins: serde_json::Value = serde_json::from_slice(
+        &fs::read(target.join(".claude/plugins/installed_plugins.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        plugins["plugins"]["p"][0]["installPath"],
+        serde_json::json!(format!(
+            "{}/.claude/plugins/cache/p/1.0",
+            target.to_string_lossy().replace('\\', "/")
+        ))
+    );
 
     // The point of the whole tool: the hook now names THIS machine's home.
     assert_eq!(
