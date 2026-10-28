@@ -59,7 +59,7 @@ const STATE_DOTFILES: &[&str] = &[
     ".gitignore",
 ];
 
-const CREDENTIALS: &str = "claude/.credentials.json";
+pub const CREDENTIALS: &str = "claude/.credentials.json";
 
 /// The file that supplies [`BackupOptions::extras`], carried so the list travels with the archive.
 pub const INCLUDE_LIST: &str = ".claude-sync-include";
@@ -85,6 +85,15 @@ fn matches_extra(path: &str, extras: &[String]) -> bool {
     })
 }
 
+/// Has the user's include list asked for something at, above, or below this directory?
+pub fn named_by_extras(dir: &str, options: &BackupOptions) -> bool {
+    let path = forward_slashes(dir);
+    options
+        .extras
+        .iter()
+        .any(|extra| extra_reaches_into(&path, extra))
+}
+
 /// Does a user-listed extra name something at, above, or below this directory?
 fn extra_reaches_into(dir: &str, extra: &str) -> bool {
     let extra = extra.trim().trim_end_matches('/');
@@ -98,7 +107,14 @@ pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification
     let path = forward_slashes(rel_path);
 
     // Checked before anything else so no extras entry can smuggle the token out.
-    if path == CREDENTIALS {
+    // Ignoring case: on macOS and Windows `.CREDENTIALS.json` is the same file. A copy of it
+    // anywhere else (one a link or a copy left lying about) is just as secret, and is never
+    // carried, even with --include-credentials.
+    let name = path.rsplit('/').next().unwrap_or_default();
+    if name.eq_ignore_ascii_case(".credentials.json") && !path.eq_ignore_ascii_case(CREDENTIALS) {
+        return Classification::Secret;
+    }
+    if path.eq_ignore_ascii_case(CREDENTIALS) {
         return if options.include_credentials {
             Classification::Include
         } else {
@@ -107,7 +123,7 @@ pub fn classify_entry(rel_path: &str, options: &BackupOptions) -> Classification
     }
 
     // Archives this tool writes must never be swept into the next one.
-    if path.ends_with(".zip") {
+    if path.to_lowercase().ends_with(".zip") {
         return Classification::Exclude;
     }
 

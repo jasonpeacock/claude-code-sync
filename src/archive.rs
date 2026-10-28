@@ -24,6 +24,9 @@ pub struct FileRecord {
     pub path: String,
     pub sha256: String,
     pub size: usize,
+    /// Restored with the execute bit set, so a hook invoked directly still runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub executable: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -73,9 +76,15 @@ pub fn write_zip(entries: &[Entry]) -> Result<Vec<u8>> {
     Ok(writer.finish()?.into_inner())
 }
 
+/// A real archive is about 140 KB. This cap only exists so a zip bomb fails instead of
+/// exhausting memory, and it applies before anything is vetted, dry runs included. It is on the
+/// whole archive, not each file: a history.jsonl of 80 MB compresses to a few and is legitimate.
+pub const MAX_TOTAL_BYTES: u64 = 512 << 20;
+
 pub fn read_zip(bytes: Vec<u8>) -> Result<Vec<Entry>> {
     let mut archive = ZipArchive::new(Cursor::new(bytes))?;
     let mut entries = Vec::with_capacity(archive.len());
+    let mut total = 0u64;
 
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
@@ -86,7 +95,13 @@ pub fn read_zip(bytes: Vec<u8>) -> Result<Vec<Entry>> {
         // CRITICAL: the size is the archive's own claim about itself. Preallocating it verbatim
         // lets one header field ask for an arbitrary allocation, so it is capped to a hint.
         let mut data = Vec::with_capacity(file.size().min(1 << 20) as usize);
-        file.read_to_end(&mut data)?;
+        (&mut file)
+            .take(MAX_TOTAL_BYTES - total + 1)
+            .read_to_end(&mut data)?;
+        total += data.len() as u64;
+        if total > MAX_TOTAL_BYTES {
+            return Err("archive expands to more than 512 MB, refusing".into());
+        }
         entries.push(Entry { path, data });
     }
 

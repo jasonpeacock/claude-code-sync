@@ -37,13 +37,13 @@ This tool stores those paths as `${HOME}` and `${NODE}` tokens and re-expands th
 ## What it does
 
 - **Path rewriting that survives a round trip.** Absolute paths become tokens on backup and real paths again on restore, and running it twice on the same machine produces the identical file rather than a near-duplicate.
-- **Symlinks preserved, not flattened.** Links are recorded and recreated, with the `~/.agents` source tree carried alongside. Where the OS refuses to create a link, it falls back to a copy instead of failing.
+- **Skill links preserved, not flattened.** Two link shapes are recorded and recreated: `~/.claude/skills/<name> -> ~/.agents/skills/<name>`, and `~/.claude/skills -> ~/.agents/skills` as a whole. The `~/.agents` source tree is carried alongside. Every other symlink is reported and not carried, neither as a link nor as what it points at. Where the OS refuses to create a link, it falls back to a copy instead of failing.
 - **Cross-OS by default.** Archives store LF and are rewritten to the target's native line ending on restore. Binaries are detected and passed through untouched.
 - **Merges rather than clobbers.** `settings.json` is deep merged under a strategy you pick, with arrays unioned and key order preserved, so syncing from one machine does not wipe a permission you added on the other.
-- **Never overwrites without a snapshot.** A full pre-restore backup is written every time, automatically.
-- **An archive is treated as untrusted input.** Every entry must be listed in the manifest, match the SHA-256 recorded for it, and land inside `~/.claude` or `~/.agents`. Anything else stops the restore before a single file is written.
+- **Never overwrites without a snapshot.** Before every restore, each file the archive would overwrite, credentials included, is copied into a pre-restore snapshot, readable only by you.
+- **An archive is treated as untrusted input.** Every entry must be listed in the manifest, match the SHA-256 recorded for it, and land inside `~/.claude` or `~/.agents`. Anything else stops the restore before a single file is written. Any link other than the two skill shapes is skipped.
 - **Secrets stay put.** `.credentials.json` is refused by default and cannot be pulled in through the user include list.
-- **Curated, not everything.** Transcripts, caches and session state are left behind, so a backup is about 140 KB rather than hundreds of megabytes.
+- **Curated, not everything.** Transcripts, caches and session state are left behind, and so are `.git`, `node_modules`, `.venv` and `__pycache__` directories wherever they sit (unless `.claude-sync-include` names them), so a backup is about 140 KB rather than hundreds of megabytes.
 
 ## Commands
 
@@ -207,8 +207,9 @@ The archive always stores LF. On restore, files are rewritten to the target's na
 
 ### Safety
 
-- A snapshot of the current config goes to `~/.claude/backups/pre-restore-<stamp>.zip` before anything is overwritten. Always, not optionally.
-- `--dry-run` writes nothing and skips the snapshot.
+- Before anything is overwritten, every file the restore will replace is copied to `~/.claude/backups/pre-restore-<stamp>.zip`. Always, not optionally. Files are replaced by writing beside them and renaming, so a hard link is never written through.
+- `--dry-run` writes nothing and skips the snapshot. An option a command does not know, `--dry-run=true` included, is refused rather than ignored.
+- Hook and script execute bits survive the round trip. A restored `.credentials.json`, and any archive or snapshot that may hold it, is written owner-only.
 - Every entry carries a CRC32, verified on read. A corrupt archive fails loudly.
 - Credentials are refused by default, with a warning naming the file that was skipped.
 
@@ -216,7 +217,15 @@ An archive can arrive from anywhere, so restore treats one as untrusted input ra
 
 - An entry whose path climbs out of `~/.claude` or `~/.agents` is refused. A zip naming `claude/../../.bashrc` would otherwise be joined straight onto your home directory, so the check runs on the path components, in either separator style, before anything is written.
 - An entry absent from `manifest.json`, or whose bytes do not match the SHA-256 recorded there, is refused. The manifest is the authority on what an archive may write, which makes appending a file to someone else's archive fail loudly instead of silently.
-- Both checks run for the whole archive before the first write, so a rejected archive leaves nothing half-applied.
+- Only the two skill-link shapes are ever created, judged from how the archive spells them, so no target can lead outside `~/.claude` and `~/.agents`, or to anything but a skill directory. A wider rule let one archive plant `claude/skills/k -> ~/.ssh`, or a link into `projects/`, and the next backup carry what it led to.
+- An archive that names one path twice (case ignored on macOS and Windows), or puts a path underneath one of its own links, is refused outright.
+- A skill link is made only where both ends are exactly where their names say, with no symlink along the way and the skill already present, and it is written relative, as skill installers write it.
+- A write that a symlink on this machine would carry into somewhere backups leave alone, such as a plugin checkout, is skipped and reported.
+- A write that would pass through a symlink already on disk and out of the two roots is skipped and reported. If `~/.claude/CLAUDE.md` links into a dotfiles checkout on the target, restore leaves it alone rather than overwriting the file it points at.
+- An entry outside `claude/` and `agents/`, or any `.zip` entry, stops the restore instead of being skipped. Archives that expand past 512 MB are refused.
+- All of these checks, and the `settings.json` merge, run for the whole archive before the first write, so a rejected archive leaves nothing half-applied.
+
+The manifest is not signed: anyone who can modify an archive can rewrite its manifest too. The hash check catches a file appended carelessly, not a deliberate forgery, so only restore archives you trust. A restored `settings.json` can add hooks, which run commands.
 
 ## Building from source
 
@@ -225,7 +234,7 @@ cargo build --release
 cargo test
 ```
 
-68 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
+80 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
 
 ## License
 

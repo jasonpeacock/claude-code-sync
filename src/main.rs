@@ -1,7 +1,8 @@
 use std::io::{self, BufRead, Write};
 
 use claude_code_sync::app::{
-    backup, home_dir, read_include_list, read_manifest, restore, settings_conflicts, RestoreOptions,
+    backup, home_dir, printable, read_include_list, read_manifest, restore, settings_conflicts,
+    snapshot, write_new, RestoreOptions, FAILED, SKIPPED,
 };
 use claude_code_sync::archive::{read_zip, Result};
 use claude_code_sync::classify::BackupOptions;
@@ -52,6 +53,18 @@ impl Args {
 
         while index < raw.len() {
             let argument = &raw[index];
+            // Everything after `--` is positional, so an archive named `-x.zip` can be restored.
+            if argument == "--" {
+                let rest = raw[index + 1..].iter().cloned();
+                if parsed.command.is_none() {
+                    let mut rest = rest;
+                    parsed.command = rest.next();
+                    parsed.positional.extend(rest);
+                } else {
+                    parsed.positional.extend(rest);
+                }
+                break;
+            }
             if let Some((name, value)) = argument.split_once('=') {
                 if name.starts_with("--") {
                     parsed.values.push((name.to_string(), value.to_string()));
@@ -62,9 +75,17 @@ impl Args {
             if VALUE_FLAGS.contains(&argument.as_str()) {
                 // A dangling `--merge` records an empty value so the command rejects it, rather
                 // than falling through to a flag and silently applying the default strategy.
-                let value = raw.get(index + 1).cloned().unwrap_or_default();
-                parsed.values.push((argument.clone(), value));
-                index += 2;
+                // So does one followed by another option, which is left to be parsed as itself.
+                match raw.get(index + 1) {
+                    Some(value) if !value.starts_with('-') => {
+                        parsed.values.push((argument.clone(), value.clone()));
+                        index += 2;
+                    }
+                    _ => {
+                        parsed.values.push((argument.clone(), String::new()));
+                        index += 1;
+                    }
+                }
                 continue;
             }
             if argument.starts_with('-') {
@@ -78,6 +99,30 @@ impl Args {
         }
 
         parsed
+    }
+
+    /// CRITICAL: an option this command does not know is refused, never ignored. A mistyped
+    /// `--dryrun`, or `--dry-run=true`, which parses as a value, would otherwise run a real
+    /// restore while the user believes nothing is being written.
+    fn check(&self, flags: &[&str], values: &[&str], positionals: usize) -> Result<()> {
+        for (name, value) in &self.values {
+            if flags.contains(&name.as_str()) {
+                return Err(format!("{name} takes no value").into());
+            }
+            if !values.contains(&name.as_str()) {
+                return Err(format!("unknown option: {name}").into());
+            }
+            if value.is_empty() {
+                return Err(format!("{name} needs a value").into());
+            }
+        }
+        if let Some(flag) = self.flags.iter().find(|f| !flags.contains(&f.as_str())) {
+            return Err(format!("unknown option: {flag}").into());
+        }
+        if self.positional.len() > positionals {
+            return Err(format!("unexpected argument: {}", self.positional[positionals]).into());
+        }
+        Ok(())
     }
 
     fn has(&self, flag: &str) -> bool {
@@ -114,26 +159,40 @@ fn kilobytes(bytes: usize) -> String {
     format!("{}.{}", tenths / 10, tenths % 10)
 }
 
-fn ask_for(conflicts: &[Conflict]) -> Vec<(String, Choice)> {
+/// Only an explicit answer decides a conflict. Enter re-asks, and end of input stops the restore
+/// before anything is written rather than quietly taking the archive's side.
+fn ask_for(conflicts: &[Conflict]) -> Result<Vec<(String, Choice)>> {
     let stdin = io::stdin();
     let mut answers = Vec::new();
 
     for conflict in conflicts {
-        println!("\n  {}", conflict.path);
-        println!("    this machine: {}", conflict.existing);
-        println!("    archive:      {}", conflict.incoming);
-        print!("    keep [l]ocal or take [a]rchive? ");
-        let _ = io::stdout().flush();
+        println!("\n  {}", printable(&conflict.path));
+        println!(
+            "    this machine: {}",
+            printable(&conflict.existing.to_string())
+        );
+        println!(
+            "    archive:      {}",
+            printable(&conflict.incoming.to_string())
+        );
+        let choice = loop {
+            print!("    keep [l]ocal or take [a]rchive? ");
+            let _ = io::stdout().flush();
 
-        let mut reply = String::new();
-        let choice = match stdin.lock().read_line(&mut reply) {
-            Ok(_) if reply.trim().to_lowercase().starts_with('l') => Choice::Existing,
-            _ => Choice::Incoming,
+            let mut reply = String::new();
+            if stdin.lock().read_line(&mut reply)? == 0 {
+                return Err("no answer given; nothing was restored".into());
+            }
+            match reply.trim().to_lowercase().chars().next() {
+                Some('l') => break Choice::Existing,
+                Some('a') => break Choice::Incoming,
+                _ => {}
+            }
         };
         answers.push((conflict.path.clone(), choice));
     }
 
-    answers
+    Ok(answers)
 }
 
 fn run() -> Result<i32> {
@@ -153,6 +212,13 @@ fn run() -> Result<i32> {
 
     match args.command.as_deref() {
         Some("backup") => {
+            args.check(&["--with-memory", "--include-credentials"], &["--out"], 0)?;
+            let claude = home_dir()?.join(".claude");
+            if !claude.is_dir() {
+                return Err(
+                    format!("{} does not exist; nothing to back up", claude.display()).into(),
+                );
+            }
             let options = BackupOptions {
                 with_memory: args.has("--with-memory"),
                 include_credentials: args.has("--include-credentials"),
@@ -179,7 +245,8 @@ fn run() -> Result<i32> {
             std::fs::create_dir_all(&directory)
                 .map_err(|e| format!("{}: {e}", directory.display()))?;
             let out = directory.join(format!("claude-sync-{host}-{}.zip", stamp(&now)));
-            std::fs::write(&out, &archive).map_err(|e| format!("{}: {e}", out.display()))?;
+            write_new(&out, &archive, manifest.includes_credentials)
+                .map_err(|e| format!("{}: {e}", out.display()))?;
 
             println!(
                 "{} files, {} links",
@@ -191,6 +258,7 @@ fn run() -> Result<i32> {
         }
 
         Some("restore") => {
+            args.check(&["--dry-run"], &["--merge"], 1)?;
             let Some(path) = args.positional.first() else {
                 eprintln!("restore needs an archive path\n\n{USAGE}");
                 return Ok(1);
@@ -209,27 +277,8 @@ fn run() -> Result<i32> {
 
             let mut answers: Vec<(String, Choice)> = Vec::new();
             if strategy == MergeStrategy::Ask {
-                answers = ask_for(&settings_conflicts(&entries)?);
+                answers = ask_for(&settings_conflicts(&entries)?)?;
             }
-
-            if !dry_run {
-                let directory = home_dir()?.join(".claude").join("backups");
-                // The snapshot must cover everything a restore could overwrite, extras included.
-                let (snapshot, _) = backup(
-                    &BackupOptions {
-                        with_memory: true,
-                        include_credentials: false,
-                        extras: read_include_list(),
-                    },
-                    now.to_rfc3339(),
-                    host.clone(),
-                )?;
-                std::fs::create_dir_all(&directory)?;
-                let out = directory.join(format!("pre-restore-{}.zip", stamp(&now)));
-                std::fs::write(&out, snapshot)?;
-                println!("snapshot of current config -> {}\n", out.display());
-            }
-
             let mut resolve = |conflict: &Conflict| {
                 answers
                     .iter()
@@ -237,25 +286,63 @@ fn run() -> Result<i32> {
                     .map(|(_, choice)| *choice)
                     .unwrap_or(Choice::Incoming)
             };
-            let mut options = RestoreOptions {
-                strategy,
-                dry_run,
-                resolve: &mut resolve,
-            };
-            let actions = restore(&entries, &manifest, &mut options)?;
+
+            // A dry run first, always: it vets the whole archive, so one that is refused leaves
+            // no snapshot behind and writes nothing at all.
+            let mut actions = restore(
+                &entries,
+                &manifest,
+                &mut RestoreOptions {
+                    strategy,
+                    dry_run: true,
+                    resolve: &mut resolve,
+                },
+            )?;
+
+            if !dry_run {
+                let directory = home_dir()?.join(".claude").join("backups");
+                // The snapshot must cover everything this restore could overwrite, which is
+                // decided by the archive, not by this machine's include list.
+                let snapshot = snapshot(&manifest, now.to_rfc3339(), host.clone())?;
+                std::fs::create_dir_all(&directory)?;
+                let out = directory.join(format!("pre-restore-{}.zip", stamp(&now)));
+                write_new(&out, &snapshot, true).map_err(|e| format!("{}: {e}", out.display()))?;
+                println!("snapshot of current config -> {}\n", out.display());
+
+                actions = restore(
+                    &entries,
+                    &manifest,
+                    &mut RestoreOptions {
+                        strategy,
+                        dry_run: false,
+                        resolve: &mut resolve,
+                    },
+                )?;
+            }
 
             for action in &actions {
-                println!("  {action}");
+                println!("  {}", printable(action));
             }
+            let failed = actions.iter().filter(|a| a.starts_with(FAILED)).count();
+            let skipped = actions.iter().filter(|a| a.starts_with(SKIPPED)).count();
             println!(
-                "\n{} {}",
-                actions.len(),
+                "\n{} {}{}",
+                actions.len() - failed - skipped,
                 if dry_run {
                     "planned (dry run, nothing written)"
                 } else {
                     "applied"
+                },
+                if skipped > 0 {
+                    format!(", {skipped} skipped")
+                } else {
+                    String::new()
                 }
             );
+            if failed > 0 {
+                eprintln!("{failed} link(s) could not be restored");
+                return Ok(1);
+            }
             Ok(0)
         }
 
@@ -274,7 +361,7 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("error: {}", printable(&error.to_string()));
             std::process::exit(1);
         }
     }
@@ -310,6 +397,48 @@ mod tests {
         let args = Args::parse(vec!["restore".into(), "a.zip".into(), "--merge".into()]);
         assert_eq!(args.value("--merge"), Some(""));
         assert_eq!(MergeStrategy::parse(args.value("--merge").unwrap()), None);
+    }
+
+    fn restore_args(raw: &[&str]) -> Result<()> {
+        let mut all = vec!["restore".to_string(), "a.zip".to_string()];
+        all.extend(raw.iter().map(|s| s.to_string()));
+        Args::parse(all).check(&["--dry-run"], &["--merge"], 1)
+    }
+
+    // Each of these used to run a real restore while the user asked for a dry run.
+    #[test]
+    fn a_misspelled_or_valued_flag_is_refused_rather_than_ignored() {
+        for raw in [
+            &["--dry-run=true"][..],
+            &["--dryrun"],
+            &["-n"],
+            &["--merge=incoming", "--bogus=1"],
+            &["--merge", "--dry-run"],
+            &["b.zip"],
+        ] {
+            assert!(restore_args(raw).is_err(), "{raw:?}");
+        }
+        assert!(restore_args(&["--dry-run", "--merge=existing"]).is_ok());
+        assert!(restore_args(&["--merge", "ask"]).is_ok());
+        assert!(
+            Args::parse(vec!["backup".into(), "--out=-snapshots".into()])
+                .check(&[], &["--out"], 0)
+                .is_ok()
+        );
+        let dashed = Args::parse(vec!["restore".into(), "--".into(), "-x.zip".into()]);
+        assert_eq!(dashed.positional, vec!["-x.zip".to_string()]);
+    }
+
+    #[test]
+    fn control_characters_in_archive_text_are_escaped() {
+        assert_eq!(
+            printable("create  claude/a\x1b[2Kb"),
+            "create  claude/a\\u{1b}[2Kb"
+        );
+        assert_eq!(
+            printable("link    claude/x -> /home/dev"),
+            "link    claude/x -> /home/dev"
+        );
     }
 
     #[test]
