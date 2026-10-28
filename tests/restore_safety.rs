@@ -31,6 +31,7 @@ fn forge(files: &[(&str, &str)], links: &[(&str, &str)]) -> (Vec<Entry>, Manifes
             sha256: format!("{:x}", Sha256::digest(data.as_bytes())),
             size: data.len(),
             executable: false,
+            crlf: false,
         });
         entries.push(Entry {
             path: path.to_string(),

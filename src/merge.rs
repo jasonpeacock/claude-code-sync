@@ -43,11 +43,48 @@ pub struct Conflict {
     pub incoming: Value,
 }
 
-fn union_arrays(existing: &[Value], incoming: &[Value]) -> Value {
+/// What makes two array items the same entry, when that is not their whole value. A hook entry is
+/// its command, and a hook group is its matcher, absent or not. Without this a hook whose timeout
+/// changed on one machine is a different value, and the union lists it twice, so it fires twice.
+fn identity(item: &Value) -> Option<(&'static str, &Value)> {
+    let Value::Object(map) = item else {
+        return None;
+    };
+    if let Some(command) = map.get("command") {
+        return Some(("command", command));
+    }
+    if map.contains_key("hooks") {
+        return Some(("matcher", map.get("matcher").unwrap_or(&Value::Null)));
+    }
+    None
+}
+
+/// Local items first, in their order. An incoming item that is the same entry as a local one is
+/// merged into it, so a conflict inside it is decided by the strategy like any other; anything
+/// else new is appended.
+fn union_arrays(
+    existing: &[Value],
+    incoming: &[Value],
+    strategy: MergeStrategy,
+    resolve: &mut dyn FnMut(&Conflict) -> Choice,
+    path: &str,
+) -> Value {
     let mut merged = existing.to_vec();
     for item in incoming {
-        if !merged.contains(item) {
-            merged.push(item.clone());
+        if merged.contains(item) {
+            continue;
+        }
+        let same = identity(item).and_then(|wanted| {
+            merged
+                .iter()
+                .position(|candidate| identity(candidate) == Some(wanted))
+        });
+        match same {
+            Some(index) => {
+                let child = format!("{path}[{index}]");
+                merged[index] = merge_value(&merged[index], item, strategy, resolve, &child);
+            }
+            None => merged.push(item.clone()),
         }
     }
     Value::Array(merged)
@@ -86,7 +123,7 @@ fn merge_value(
     }
 
     if let (Value::Array(left), Value::Array(right)) = (existing, incoming) {
-        return union_arrays(left, right);
+        return union_arrays(left, right, strategy, resolve, path);
     }
 
     // Scalars, and any type mismatch between the two sides, are conflicts.
@@ -247,6 +284,59 @@ mod tests {
             merged["permissions"]["allow"],
             json!(["Bash(cargo:*)", "Bash(npm view:*)"])
         );
+    }
+
+    fn hooks(timeout: u64, command: &str) -> Value {
+        json!({ "hooks": { "PreToolUse": [
+            { "matcher": "Bash", "hooks": [ { "type": "command", "command": command, "timeout": timeout } ] }
+        ] } })
+    }
+
+    #[test]
+    fn a_changed_hook_merges_into_the_same_hook_rather_than_firing_twice() {
+        let merged = merge_settings(
+            &hooks(5, "a.sh"),
+            &hooks(30, "a.sh"),
+            MergeStrategy::Incoming,
+            &mut never_asked,
+        );
+        assert_eq!(merged, hooks(30, "a.sh"));
+        let kept = merge_settings(
+            &hooks(5, "a.sh"),
+            &hooks(30, "a.sh"),
+            MergeStrategy::Existing,
+            &mut never_asked,
+        );
+        assert_eq!(kept, hooks(5, "a.sh"));
+    }
+
+    #[test]
+    fn a_new_hook_joins_its_matchers_group_and_a_new_matcher_is_appended() {
+        let merged = merge_settings(
+            &hooks(5, "a.sh"),
+            &hooks(5, "b.sh"),
+            MergeStrategy::Incoming,
+            &mut never_asked,
+        );
+        let group = &merged["hooks"]["PreToolUse"];
+        assert_eq!(group.as_array().unwrap().len(), 1);
+        assert_eq!(group[0]["hooks"].as_array().unwrap().len(), 2);
+
+        let other = json!({ "hooks": { "PreToolUse": [ { "matcher": "Edit", "hooks": [] } ] } });
+        let merged = merge_settings(
+            &hooks(5, "a.sh"),
+            &other,
+            MergeStrategy::Incoming,
+            &mut never_asked,
+        );
+        assert_eq!(merged["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_hook_conflict_is_asked_about_by_its_position() {
+        let conflicts = find_conflicts(&hooks(5, "a.sh"), &hooks(30, "a.sh"));
+        let paths: Vec<&str> = conflicts.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, vec!["hooks.PreToolUse[0].hooks[0].timeout"]);
     }
 
     #[test]

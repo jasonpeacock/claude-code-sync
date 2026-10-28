@@ -152,12 +152,18 @@ fn a_config_survives_a_backup_and_a_restore_onto_a_different_machine() {
     let actions = apply(&entries, &manifest, &target, false);
     assert_eq!(actions.len(), manifest.files.len());
 
+    // A file written with LF stays LF everywhere; only a CRLF one goes back to CRLF, and only
+    // on Windows. A shell hook given CRLF stops running.
     assert_eq!(
         fs::read_to_string(target.join(".claude/hooks/x.mjs")).unwrap(),
+        "export default 1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(target.join(".claude/CLAUDE.md")).unwrap(),
         if cfg!(windows) {
-            "export default 1\r\n"
+            "# rules\r\nsecond line\r\n"
         } else {
-            "export default 1\n"
+            "# rules\nsecond line\n"
         }
     );
     assert!(target.join(".agents/skills/grilling/SKILL.md").exists());

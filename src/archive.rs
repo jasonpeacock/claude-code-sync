@@ -27,6 +27,9 @@ pub struct FileRecord {
     /// Restored with the execute bit set, so a hook invoked directly still runs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub executable: bool,
+    /// Written with CRLF where it came from. Restored with CRLF only on Windows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crlf: bool,
 }
 
 #[derive(Serialize, Deserialize)]

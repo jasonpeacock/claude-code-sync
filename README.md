@@ -38,7 +38,7 @@ This tool stores those paths as `${HOME}` and `${NODE}` tokens and re-expands th
 
 - **Path rewriting that survives a round trip.** Absolute paths become tokens on backup and real paths again on restore, and running it twice on the same machine produces the identical file rather than a near-duplicate.
 - **Skill links preserved, not flattened.** Two link shapes are recorded and recreated: `~/.claude/skills/<name> -> ~/.agents/skills/<name>`, and `~/.claude/skills -> ~/.agents/skills` as a whole. The `~/.agents` source tree is carried alongside. Every other symlink is reported and not carried, neither as a link nor as what it points at. Where the OS refuses to create a link, it falls back to a copy instead of failing.
-- **Cross-OS by default.** Archives store LF and are rewritten to the target's native line ending on restore. Binaries are detected and passed through untouched.
+- **Cross-OS by default.** Archives store LF; files that were CRLF go back to the target's native ending, and LF files such as shell hooks stay LF. Binaries are detected and passed through untouched.
 - **Merges rather than clobbers.** `settings.json` is deep merged under a strategy you pick, with arrays unioned and key order preserved, so syncing from one machine does not wipe a permission you added on the other.
 - **Never overwrites without a snapshot.** Before every restore, each file the archive would overwrite, credentials included, is copied into a pre-restore snapshot, readable only by you.
 - **An archive is treated as untrusted input.** Every entry must be listed in the manifest, match the SHA-256 recorded for it, and land inside `~/.claude` or `~/.agents`. Anything else stops the restore before a single file is written. Any link other than the two skill shapes is skipped.
@@ -106,7 +106,7 @@ Only `settings.json` is merged. Every other file is written as-is.
 | `replace` | Discard this machine's settings entirely |
 | `ask` | Prompt for each conflicting key, showing both values |
 
-Under every strategy except `replace`, objects merge key by key and arrays are unioned with local order preserved. Only a differing scalar, or a type mismatch, counts as a conflict. Key order is preserved, so your file keeps its shape and new keys are appended rather than the whole thing being reshuffled.
+Under every strategy except `replace`, objects merge key by key and arrays are unioned with local order preserved. In an array, a hook with the same `command`, or a hook group with the same `matcher`, is the same entry and merges into it, so a hook whose timeout changed is updated rather than listed, and fired, twice. Only a differing scalar, or a type mismatch, counts as a conflict. Key order is preserved, so your file keeps its shape and new keys are appended rather than the whole thing being reshuffled.
 
 ## What travels
 
@@ -204,7 +204,7 @@ That last rule matters more than it sounds. A permission rule like `Bash(cp "C:/
 
 ### Line endings
 
-The archive always stores LF. On restore, files are rewritten to the target's native ending: CRLF on Windows, LF elsewhere. Binary files are detected by a NUL byte in the first 8 KB and passed through untouched.
+The archive always stores LF, and records which files were written with CRLF. On restore those go back to CRLF on Windows and LF elsewhere; every other file stays LF, so a shell hook written on Linux still runs from Git Bash on Windows. Binary files are detected by a NUL byte in the first 8 KB and passed through untouched.
 
 ### Safety
 
@@ -235,7 +235,7 @@ cargo build --release
 cargo test
 ```
 
-83 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
+87 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
 
 ## License
 

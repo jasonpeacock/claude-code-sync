@@ -11,7 +11,7 @@ use crate::archive::{
 use crate::classify::{
     classify_entry, named_by_extras, should_descend, BackupOptions, Classification, CREDENTIALS,
 };
-use crate::eol::{denormalize_for_disk, normalize_for_archive, LineEnding};
+use crate::eol::{denormalize_for_disk, normalize_for_archive, uses_crlf, LineEnding};
 use crate::merge::{find_conflicts, merge_settings, Choice, Conflict, MergeStrategy};
 use crate::paths::{forward_slashes, resolve_path, tokenize_path, PathContext};
 
@@ -659,6 +659,7 @@ pub fn backup(
                 sha256: sha256_hex(&data),
                 size: data.len(),
                 executable,
+                crlf: uses_crlf(&raw),
             });
             entries.push(Entry {
                 path: archive_path,
@@ -890,6 +891,7 @@ pub fn snapshot(archive: &Manifest, created_at: String, host: String) -> Result<
             sha256: sha256_hex(&data),
             size: data.len(),
             executable: is_executable(&metadata),
+            crlf: uses_crlf(&raw),
         });
         entries.push(Entry {
             path: record.path.clone(),
@@ -948,7 +950,12 @@ pub fn restore(
     let ctx = current_context()?;
     let home = home_dir()?;
     let roots = Roots::new(&home);
-    let eol = LineEnding::native();
+    let crlf: HashSet<&str> = manifest
+        .files
+        .iter()
+        .filter(|f| f.crlf)
+        .map(|f| f.path.as_str())
+        .collect();
     let mut actions = Vec::new();
 
     vet(entries, manifest, &home)?;
@@ -1052,7 +1059,14 @@ pub fn restore(
         ));
         writes.push((
             absolute,
-            denormalize_for_disk(&data, eol),
+            denormalize_for_disk(
+                &data,
+                if crlf.contains(entry.path.as_str()) {
+                    LineEnding::native()
+                } else {
+                    LineEnding::Lf
+                },
+            ),
             entry.path.as_str(),
         ));
     }

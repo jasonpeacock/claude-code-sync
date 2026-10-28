@@ -129,8 +129,9 @@ Mark an item `[x]` when it is fixed, and note how.
 
 ## Merge
 
-- [ ] **M1. Arrays of objects (hooks) are unioned by whole value**, so a changed hook is
+- [x] **M1. Arrays of objects (hooks) are unioned by whole value**, so a changed hook is
   duplicated instead of replaced. (`src/merge.rs`)
+  Fixed: array items with the same `command`, or hook groups with the same `matcher`, are one entry and merge recursively under the chosen strategy.
 - [ ] **M2. Removals never carry across**, so a revoked allow rule comes back.
 - [x] **M3. `--merge=ask` takes the archive's value** on any reply not starting with "l",
   including Enter and end-of-input. (`src/main.rs` ask_for)
@@ -144,8 +145,9 @@ Mark an item `[x]` when it is fixed, and note how.
 
 ## Line endings
 
-- [ ] **E1. Every text file becomes CRLF on Windows**, which breaks shell hook scripts and
+- [x] **E1. Every text file becomes CRLF on Windows**, which breaks shell hook scripts and
   changes LF files on a same-machine round trip. (`src/eol.rs`)
+  Fixed: `FileRecord.crlf` records CRLF sources; only those are written CRLF, and only on Windows.
 - [ ] **E2. Binary detection only checks the first 8000 bytes for a NUL byte**, so small or
   text-headed binaries are treated as text and corrupted. (`src/eol.rs`)
 - [ ] **E3. Lone CR bytes are silently turned into LF.** (`src/eol.rs`)

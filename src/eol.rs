@@ -1,4 +1,5 @@
-//! Line endings. Archives always store LF; restore rewrites to the target's native ending.
+//! Line endings. Archives always store LF, and record which files were CRLF. Restore writes CRLF
+//! only on Windows, and only for those: a shell script written with LF has to stay LF to run.
 //!
 //! Binary files are passed through untouched, or a stray 0x0A inside a PNG would be corrupted.
 
@@ -60,6 +61,12 @@ fn to_crlf(lf_bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Whether a text file was written with CRLF. Recorded on backup, because the archive stores LF
+/// and the original ending is otherwise lost.
+pub fn uses_crlf(bytes: &[u8]) -> bool {
+    !is_binary(bytes) && bytes.windows(2).any(|pair| pair == [CR, LF])
+}
+
 pub fn normalize_for_archive(bytes: &[u8]) -> Vec<u8> {
     if is_binary(bytes) {
         return bytes.to_vec();
@@ -82,6 +89,13 @@ pub fn denormalize_for_disk(bytes: &[u8], eol: LineEnding) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crlf_is_recorded_only_for_text_that_uses_it() {
+        assert!(uses_crlf(b"a\r\nb\r\n"));
+        assert!(!uses_crlf(b"a\nb\n"));
+        assert!(!uses_crlf(b"\x00\r\n"));
+    }
 
     #[test]
     fn converts_crlf_to_lf_for_the_archive() {
