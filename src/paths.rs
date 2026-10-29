@@ -16,7 +16,13 @@ pub struct PathContext {
     /// (`/home/you -> /local/home/you`). Tools that resolve paths write that one, so both
     /// become `${HOME}`.
     pub real_home: Option<String>,
+    /// Where `~/.claude` really is, when `CLAUDE_CONFIG_DIR` moves it. Archives always spell it
+    /// `${HOME}/.claude`, so they restore anywhere, onto a moved config or a default one.
+    pub claude_dir: Option<String>,
 }
+
+/// How an archive spells the config directory, whatever it is on either machine.
+pub const CLAUDE_DIR_SPELLING: &str = "${HOME}/.claude";
 
 pub fn forward_slashes(input: &str) -> String {
     input.replace('\\', "/")
@@ -125,6 +131,11 @@ fn replace_prefix(input: &str, needle: &str, token: &str) -> String {
 /// still resolves to `${NODE}` rather than to a `${HOME}` path that does not exist on the target.
 pub fn tokenize_path(input: &str, ctx: &PathContext) -> String {
     let mut out = replace_prefix(input, &ctx.node, NODE_TOKEN);
+    // Before home: a moved config directory may sit inside home, and must not become
+    // `${HOME}/somewhere-else`.
+    if let Some(claude_dir) = &ctx.claude_dir {
+        out = replace_prefix(&out, claude_dir, CLAUDE_DIR_SPELLING);
+    }
     if let Some(real_home) = &ctx.real_home {
         out = replace_prefix(&out, real_home, HOME_TOKEN);
     }
@@ -132,9 +143,68 @@ pub fn tokenize_path(input: &str, ctx: &PathContext) -> String {
 }
 
 pub fn resolve_path(input: &str, ctx: &PathContext) -> String {
+    let input = match &ctx.claude_dir {
+        Some(claude_dir) => respell_claude_dir(input, claude_dir),
+        None => input.to_string(),
+    };
     input
         .replace(NODE_TOKEN, &forward_slashes(&ctx.node))
         .replace(HOME_TOKEN, &forward_slashes(&ctx.home))
+}
+
+/// `${HOME}/.claude` spelled as the moved config directory, wherever it ends a path segment.
+fn respell_claude_dir(input: &str, claude_dir: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(at) = rest.find(CLAUDE_DIR_SPELLING) {
+        let after = &rest[at + CLAUDE_DIR_SPELLING.len()..];
+        out.push_str(&rest[..at]);
+        if after.bytes().next().map_or(true, is_boundary) {
+            out.push_str(&forward_slashes(claude_dir));
+        } else {
+            out.push_str(CLAUDE_DIR_SPELLING);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// [`resolve_path`] for a shell command line. A token outside quotes whose path expands to
+/// one with a space in it is quoted, so it stays one word: `${NODE} ${HOME}/x.mjs` restored onto
+/// `C:/Program Files/nodejs/node.exe` must not run `C:/Program` with `Files/...` as its argument.
+/// A token already inside quotes, and every other character, is left as it is.
+pub fn resolve_command(input: &str, ctx: &PathContext) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut quote: Option<char> = None;
+    let mut cursor = 0;
+    while cursor < input.len() {
+        let rest = &input[cursor..];
+        if rest.starts_with(NODE_TOKEN) || rest.starts_with(HOME_TOKEN) {
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                .unwrap_or(rest.len());
+            let word = resolve_path(&rest[..end], ctx);
+            if quote.is_none() && word.contains(' ') {
+                out.push('"');
+                out.push_str(&word);
+                out.push('"');
+            } else {
+                out.push_str(&word);
+            }
+            cursor += end;
+            continue;
+        }
+        let character = rest.chars().next().expect("cursor is on a char boundary");
+        match quote {
+            None if character == '"' || character == '\'' => quote = Some(character),
+            Some(open) if character == open => quote = None,
+            _ => {}
+        }
+        out.push(character);
+        cursor += character.len_utf8();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -149,7 +219,58 @@ mod tests {
             home: "C:/Users/Ehsan".into(),
             node: "C:/Program Files/nodejs/node.exe".into(),
             real_home: None,
+            claude_dir: None,
         }
+    }
+
+    #[test]
+    fn a_moved_config_directory_travels_as_home_dot_claude() {
+        let moved = PathContext {
+            claude_dir: Some("/home/dev/cfg/claude".into()),
+            ..nix()
+        };
+        assert_eq!(
+            tokenize_path("/home/dev/cfg/claude/hooks/x.mjs", &moved),
+            "${HOME}/.claude/hooks/x.mjs"
+        );
+        assert_eq!(
+            tokenize_path("/home/dev/cfg/other", &moved),
+            "${HOME}/cfg/other"
+        );
+        assert_eq!(
+            resolve_path("${HOME}/.claude/hooks/x.mjs", &moved),
+            "/home/dev/cfg/claude/hooks/x.mjs"
+        );
+        assert_eq!(
+            resolve_path("${HOME}/.claudex", &moved),
+            "/home/dev/.claudex"
+        );
+        assert_eq!(
+            resolve_path("${HOME}/.claude/hooks/x.mjs", &nix()),
+            "/home/dev/.claude/hooks/x.mjs"
+        );
+    }
+
+    #[test]
+    fn a_command_keeps_a_path_with_a_space_as_one_word() {
+        let ctx = PathContext {
+            home: "C:/Users/Jo Smith".into(),
+            ..win()
+        };
+        assert_eq!(
+            resolve_command("${NODE} ${HOME}/.claude/hooks/x.mjs --flag", &ctx),
+            r#""C:/Program Files/nodejs/node.exe" "C:/Users/Jo Smith/.claude/hooks/x.mjs" --flag"#
+        );
+        // Already quoted: left alone, not quoted twice.
+        assert_eq!(
+            resolve_command(r#""${NODE}" '${HOME}/x'"#, &ctx),
+            r#""C:/Program Files/nodejs/node.exe" 'C:/Users/Jo Smith/x'"#
+        );
+        // No space, no quotes added.
+        assert_eq!(
+            resolve_command("${NODE} ${HOME}/x", &nix()),
+            "/usr/bin/node /home/dev/x"
+        );
     }
 
     #[test]
@@ -192,6 +313,7 @@ mod tests {
             home: "/home/dev".into(),
             node: "/usr/bin/node".into(),
             real_home: None,
+            claude_dir: None,
         }
     }
 

@@ -1,8 +1,8 @@
 use std::io::{self, BufRead, Write};
 
 use claude_code_sync::app::{
-    backup, home_dir, printable, read_include_list, read_manifest, remove_created, restore,
-    settings_conflicts, snapshot, write_new, RestoreOptions, FAILED, SKIPPED,
+    backup, claude_dir, home_dir, printable, read_include_list, read_manifest, remove_created,
+    restore, settings_conflicts, snapshot, write_new, RestoreOptions, FAILED, SKIPPED,
 };
 use claude_code_sync::archive::{read_zip, Result};
 use claude_code_sync::classify::BackupOptions;
@@ -306,7 +306,7 @@ fn apply(
     }
 
     if !dry_run {
-        let directory = home_dir()?.join(".claude").join("backups");
+        let directory = claude_dir(&home_dir()?).join("backups");
         // The snapshot must cover everything this restore could overwrite, which is decided by
         // the archive, not by this machine's include list.
         let removing: &[String] = if rollback { &manifest.created } else { &[] };
@@ -378,7 +378,7 @@ fn run() -> Result<i32> {
     match args.command.as_deref() {
         Some("backup") => {
             args.check(&["--with-memory", "--include-credentials"], &["--out"], 0)?;
-            let claude = home_dir()?.join(".claude");
+            let claude = claude_dir(&home_dir()?);
             if !claude.is_dir() {
                 return Err(
                     format!("{} does not exist; nothing to back up", claude.display()).into(),
@@ -452,7 +452,7 @@ fn run() -> Result<i32> {
 
         Some("rollback") => {
             args.check(&["--dry-run"], &[], 1)?;
-            let directory = home_dir()?.join(".claude").join("backups");
+            let directory = claude_dir(&home_dir()?).join("backups");
             let path = pick_snapshot(&directory, args.positional.first())?;
             let shown = path.display().to_string();
             let bytes = std::fs::read(&path).map_err(|e| format!("{shown}: {e}"))?;

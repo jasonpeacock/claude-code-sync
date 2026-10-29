@@ -81,8 +81,9 @@ Mark an item `[x]` when it is fixed, and note how.
 - [x] **B6. A missing `~/.claude`, or a wrong `CLAUDE_SYNC_HOME`,** writes an empty archive and
   exits 0.
   Fixed for backup: a missing `~/.claude` is an error. (Snapshots still allow it.)
-- [ ] **B7. `CLAUDE_CONFIG_DIR` is ignored**, so users who relocate their config get an empty
+- [x] **B7. `CLAUDE_CONFIG_DIR` is ignored**, so users who relocate their config get an empty
   backup and a restore to the wrong place.
+  Fixed: `claude_dir()` honours `CLAUDE_CONFIG_DIR`; archives spell it `${HOME}/.claude`. Ignored under `CLAUDE_SYNC_HOME` unless it points inside that home.
 - [ ] **B8. `--with-memory` restores per-project memory under the source machine's encoded
   project path**, where Claude Code on the target never looks.
 - [ ] **B9. A planted `.claude-sync-include` silently widens every later backup.**
@@ -105,8 +106,9 @@ Mark an item `[x]` when it is fixed, and note how.
   and `known_marketplaces.json` keep the source machine's absolute paths and overwrite the local
   files whole. (`src/app.rs` SETTINGS)
   Fixed: `settings.local.json`, `installed_plugins.json` and `known_marketplaces.json` are tokenized on backup and respelled on restore (`TOKENIZED`). They still replace the local copy rather than merge.
-- [ ] **P2. `${NODE}`/`${HOME}` are expanded without quoting**, so a Unix hook restored on Windows
+- [x] **P2. `${NODE}`/`${HOME}` are expanded without quoting**, so a Unix hook restored on Windows
   splits at the space in `C:/Program Files`. (`src/paths.rs` resolve_path)
+  Fixed: `resolve_command` quotes a token whose path expands with a space, outside quotes, in `command` values only (`respell`).
 - [x] **P3. Prefix matching has no left boundary**, so the home or node prefix is replaced inside
   unrelated longer paths. (`src/paths.rs`)
   Seen on a real config: with `$HOME=/home/u` reached via `/home/u -> /local/home/u`,

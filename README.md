@@ -99,6 +99,7 @@ Because it deletes files, it only accepts a `pre-restore-*.zip` from `~/.claude/
 | Variable | Effect |
 |---|---|
 | `CLAUDE_SYNC_HOME` | Treat this directory as home instead of the real one. Use it to test a restore against a throwaway directory before touching your live config |
+| `CLAUDE_CONFIG_DIR` | Claude Code's own setting for where `~/.claude` lives. Backup reads it from there and restore writes it there. Archives always spell it `~/.claude`, so one made with a moved config restores onto a default one and the other way round. Under `CLAUDE_SYNC_HOME` it is honoured only when it points inside that home, so a trial restore never reaches a live config |
 
 On Windows the home directory comes from a Win32 known-folder lookup, **not** from `USERPROFILE`, so setting that variable redirects nothing. `CLAUDE_SYNC_HOME` is the only override.
 
@@ -117,7 +118,7 @@ Only `settings.json` is merged. Every other file is written as-is.
 | `replace` | Discard this machine's settings entirely |
 | `ask` | Prompt for each conflicting key, showing both values |
 
-Under every strategy except `replace`, objects merge key by key and arrays are unioned with local order preserved. In an array, a hook with the same `command`, or a hook group with the same `matcher`, is the same entry and merges into it, so a hook whose timeout changed is updated rather than listed, and fired, twice. Only a differing scalar, or a type mismatch, counts as a conflict. Key order is preserved, so your file keeps its shape and new keys are appended rather than the whole thing being reshuffled.
+Under every strategy except `replace`, objects merge key by key and arrays are unioned with local order preserved. A `command` value is a shell command line: a path in it that expands to one containing a space, such as `C:/Program Files/nodejs/node.exe`, is quoted so it stays one word. In an array, a hook with the same `command`, or a hook group with the same `matcher`, is the same entry and merges into it, so a hook whose timeout changed is updated rather than listed, and fired, twice. Only a differing scalar, or a type mismatch, counts as a conflict. Key order is preserved, so your file keeps its shape and new keys are appended rather than the whole thing being reshuffled.
 
 ## What travels
 
@@ -246,7 +247,7 @@ cargo build --release
 cargo test
 ```
 
-89 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
+92 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
 
 ## License
 

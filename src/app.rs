@@ -13,7 +13,7 @@ use crate::classify::{
 };
 use crate::eol::{denormalize_for_disk, normalize_for_archive, uses_crlf, LineEnding};
 use crate::merge::{find_conflicts, merge_settings, Choice, Conflict, MergeStrategy};
-use crate::paths::{forward_slashes, resolve_path, tokenize_path, PathContext};
+use crate::paths::{forward_slashes, resolve_command, resolve_path, tokenize_path, PathContext};
 
 /// The only file whose contents are machine-specific.
 const SETTINGS: &str = "claude/settings.json";
@@ -33,6 +33,36 @@ const TOKENIZED: &[&str] = &[
 /// so setting that variable does NOT redirect it. Without an explicit override there is no safe
 /// way to exercise a real restore, which is how an early test wrote onto a live config.
 pub const HOME_OVERRIDE: &str = "CLAUDE_SYNC_HOME";
+
+/// Claude Code's own setting for where `~/.claude` lives.
+pub const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
+
+/// Where this machine keeps what archives call `claude/`: `CLAUDE_CONFIG_DIR` when it is set,
+/// `~/.claude` otherwise.
+///
+/// CRITICAL: under `CLAUDE_SYNC_HOME` it is honoured only when it points inside that home. Tests
+/// and trial restores set `CLAUDE_SYNC_HOME` to a throwaway directory, and a developer's own
+/// `CLAUDE_CONFIG_DIR` left in the environment would otherwise aim them at the live config.
+pub fn claude_dir(home: &Path) -> PathBuf {
+    let default = home.join(".claude");
+    let Some(configured) = std::env::var_os(CONFIG_DIR).filter(|v| !v.is_empty()) else {
+        return default;
+    };
+    let configured = PathBuf::from(configured);
+    let configured = if configured.is_absolute() {
+        configured
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(configured),
+            Err(_) => return default,
+        }
+    };
+    let overridden = std::env::var_os(HOME_OVERRIDE).is_some_and(|v| !v.is_empty());
+    if overridden && !configured.starts_with(home) {
+        return default;
+    }
+    configured
+}
 
 /// Always absolute: a relative home (`CLAUDE_SYNC_HOME=../home`) would leave nothing for the
 /// containment checks to resolve links against.
@@ -64,7 +94,7 @@ pub fn read_include_list() -> Vec<String> {
     let Ok(home) = home_dir() else {
         return Vec::new();
     };
-    let path = home.join(".claude").join(crate::classify::INCLUDE_LIST);
+    let path = claude_dir(&home).join(crate::classify::INCLUDE_LIST);
     let Ok(contents) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -97,16 +127,19 @@ pub fn current_context() -> Result<PathContext> {
     let real_home = resolve_real(&home)
         .map(|real| spell(&real))
         .filter(|real| *real != spell(&home));
+    let claude = claude_dir(&home);
+    let claude_dir = (claude != home.join(".claude")).then(|| spell(&claude));
     Ok(PathContext {
         home: spell(&home),
         node: find_node(),
         real_home,
+        claude_dir,
     })
 }
 
 fn roots(home: &Path) -> [(&'static str, PathBuf); 2] {
     [
-        ("claude", home.join(".claude")),
+        ("claude", claude_dir(home)),
         ("agents", home.join(".agents")),
     ]
 }
@@ -696,7 +729,30 @@ pub fn map_strings(value: &serde_json::Value, f: &dyn Fn(&str) -> String) -> ser
 /// through the same tokenize-then-resolve the incoming side already went through collapses the
 /// pair. Values holding no path come back untouched, which is the tokenizer's guarantee.
 pub fn canonicalize(value: &serde_json::Value, ctx: &PathContext) -> serde_json::Value {
-    map_strings(value, &|s| resolve_path(&tokenize_path(s, ctx), ctx))
+    respell(&map_strings(value, &|s| tokenize_path(s, ctx)), ctx)
+}
+
+/// Every token respelled for this machine. A `command` value is a shell command line, so a path
+/// that expands to one with a space in it is quoted there and only there: a plain path value
+/// such as an `installPath` must stay unquoted.
+pub fn respell(value: &serde_json::Value, ctx: &PathContext) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    let value = match (key.as_str(), value) {
+                        ("command", Value::String(s)) => Value::String(resolve_command(s, ctx)),
+                        _ => respell(value, ctx),
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(|v| respell(v, ctx)).collect()),
+        Value::String(s) => Value::String(resolve_path(s, ctx)),
+        other => other.clone(),
+    }
 }
 
 /// Some Windows editors save JSON with a UTF-8 byte order mark, which serde_json rejects.
@@ -721,7 +777,7 @@ fn incoming_settings(entry: &Entry, ctx: &PathContext) -> Result<serde_json::Val
         serde_json::from_slice(strip_bom(&entry.data)).map_err(|e| {
             format!("{SETTINGS} inside the archive: {e} (--merge=replace writes it as it is)")
         })?;
-    Ok(map_strings(&archived, &|s| resolve_path(s, ctx)))
+    Ok(respell(&archived, ctx))
 }
 
 /// The conflicts a restore would hit in settings.json, collected before anything is written so
@@ -731,7 +787,7 @@ pub fn settings_conflicts(entries: &[Entry]) -> Result<Vec<Conflict>> {
         return Ok(Vec::new());
     };
     let home = home_dir()?;
-    let local = home.join(".claude").join("settings.json");
+    let local = claude_dir(&home).join("settings.json");
     // Nothing to ask about when restore will leave settings.json alone, as it does when a
     // symlink carries it out of the roots.
     if !local.exists() || !Roots::new(&home).contain(&local) {
@@ -966,7 +1022,7 @@ pub fn read_manifest(entries: &[Entry]) -> Result<Manifest> {
 pub fn remove_created(manifest: &Manifest, dry_run: bool) -> Result<Vec<String>> {
     let home = home_dir()?;
     let roots = Roots::new(&home);
-    let tops = [home.join(".claude"), home.join(".agents")];
+    let tops = [claude_dir(&home), home.join(".agents")];
     let mut actions = Vec::new();
 
     for path in &manifest.created {
@@ -1106,7 +1162,7 @@ pub fn restore(
             // carried as it was, and is written as it is.
             match serde_json::from_slice::<serde_json::Value>(strip_bom(&entry.data)) {
                 Ok(parsed) => {
-                    let resolved = map_strings(&parsed, &|s| resolve_path(s, &ctx));
+                    let resolved = respell(&parsed, &ctx);
                     Cow::Owned(
                         format!("{}\n", serde_json::to_string_pretty(&resolved)?).into_bytes(),
                     )
@@ -1282,7 +1338,7 @@ fn relative_to(from: &Path, to: &Path) -> Option<PathBuf> {
 /// no file may be written to.
 fn location(home: &Path, archive_path: &str) -> Option<PathBuf> {
     match archive_path {
-        "claude" => Some(home.join(".claude")),
+        "claude" => Some(claude_dir(home)),
         "agents" => Some(home.join(".agents")),
         _ => target_path(home, archive_path),
     }
@@ -1291,7 +1347,7 @@ fn location(home: &Path, archive_path: &str) -> Option<PathBuf> {
 fn target_path(home: &Path, archive_path: &str) -> Option<PathBuf> {
     let (prefix, rest) = archive_path.split_once('/')?;
     let root = match prefix {
-        "claude" => home.join(".claude"),
+        "claude" => claude_dir(home),
         "agents" => home.join(".agents"),
         _ => return None,
     };
@@ -1534,6 +1590,7 @@ mod tests {
             home: "C:/Users/Ehsan".into(),
             node: "C:/Program Files/nodejs/node.exe".into(),
             real_home: None,
+            claude_dir: None,
         };
         let local = serde_json::json!({
             "hooks": [r"C:\Users\Ehsan\.claude\hooks\x.mjs"],
@@ -1553,6 +1610,7 @@ mod tests {
             home: "/home/dev".into(),
             node: "/usr/bin/node".into(),
             real_home: None,
+            claude_dir: None,
         };
         let value = serde_json::json!({ "a": "/home/dev/.claude/hooks/x.mjs", "b": "plain" });
         let once = canonicalize(&value, &ctx);
