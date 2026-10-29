@@ -2,7 +2,7 @@ use std::io::{self, BufRead, Write};
 
 use claude_code_sync::app::{
     backup, claude_dir, home_dir, printable, read_include_list, read_manifest, remove_created,
-    restore, settings_conflicts, snapshot, write_new, RestoreOptions, FAILED, SKIPPED,
+    restore, settings_conflicts, snapshot, write_new, RestoreOptions, COMMAND, FAILED, SKIPPED,
 };
 use claude_code_sync::archive::{read_zip, Result};
 use claude_code_sync::classify::BackupOptions;
@@ -339,9 +339,10 @@ fn apply(
     }
     let failed = actions.iter().filter(|a| a.starts_with(FAILED)).count();
     let skipped = actions.iter().filter(|a| a.starts_with(SKIPPED)).count();
+    let commands = actions.iter().filter(|a| a.starts_with(COMMAND)).count();
     println!(
         "\n{} {}{}",
-        actions.len() - failed - skipped,
+        actions.len() - failed - skipped - commands,
         if dry_run {
             "planned (dry run, nothing written)"
         } else {
@@ -353,6 +354,9 @@ fn apply(
             String::new()
         }
     );
+    if commands > 0 {
+        println!("{commands} command(s) above are new to this machine; Claude Code will run them");
+    }
     if failed > 0 {
         eprintln!("{failed} link(s) could not be restored");
         return Ok(1);

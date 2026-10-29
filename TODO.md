@@ -56,8 +56,9 @@ Mark an item `[x]` when it is fixed, and note how.
 - [x] **S13. Existing links are never updated** to a new target. (Relative targets are now resolved
   against the link's directory for every check and for the copy fallback.)
   Superseded by the simplified link policy: the code it describes is gone.
-- [ ] **S14.** *(unconfirmed)* An archive can add hooks that run arbitrary commands, even under
+- [x] **S14.** *(unconfirmed)* An archive can add hooks that run arbitrary commands, even under
   `--merge=existing`, and `--dry-run` does not show the settings change.
+  Addressed: the plan lists every command line (hooks, status line, credential and header helpers) new to this machine on its own `command` line, dry runs included. Running them is still the point of restoring settings, so they are shown, not refused.
 
 ## Backup correctness
 
@@ -119,8 +120,9 @@ Mark an item `[x]` when it is fixed, and note how.
   is not on PATH. (`src/app.rs` find_node)
 - [ ] **P5. Windows homes in Claude Code's POSIX form** (`/c/Users/...`, `//c/Users/...`) are
   never tokenized. (`src/paths.rs`)
-- [ ] **P6. Right-boundary set misses `) : ; ,`**, so a home path at the end of a permission rule
+- [x] **P6. Right-boundary set misses `) : ; ,`**, so a home path at the end of a permission rule
   is not tokenized. (`src/paths.rs`)
+  Fixed: `)`, `]`, `,`, `;` and `:` also end a path.
 - [ ] **P7. A literal `${HOME}`/`${NODE}` the user wrote** is expanded on every restore, even in
   the target machine's own values.
 - [ ] **P8. Home of `/` or a drive root** collapses to `""` or `C:`, so either nothing or every

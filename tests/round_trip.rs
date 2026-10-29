@@ -150,7 +150,15 @@ fn a_config_survives_a_backup_and_a_restore_onto_a_different_machine() {
         r#"{ "model": "sonnet", "localOnly": true, "permissions": { "allow": ["Bash(cargo:*)"] } }"#,
     );
     let actions = apply(&entries, &manifest, &target, false);
-    assert_eq!(actions.len(), manifest.files.len());
+    let (commands, writes): (Vec<&String>, Vec<&String>) =
+        actions.iter().partition(|a| a.starts_with("command"));
+    assert_eq!(writes.len(), manifest.files.len());
+    // The hook is new to this machine, and a hook is a command it will run, so it is named.
+    assert_eq!(commands.len(), 1, "{actions:?}");
+    assert!(
+        commands[0].contains("hooks.SessionStart[0].command") && commands[0].contains("x.mjs"),
+        "{commands:?}"
+    );
 
     // A file written with LF stays LF everywhere; only a CRLF one goes back to CRLF, and only
     // on Windows. A shell hook given CRLF stops running.
@@ -214,7 +222,10 @@ fn a_config_survives_a_backup_and_a_restore_onto_a_different_machine() {
 
     // --- a dry run writes nothing ---------------------------------------------------------
     let planned = apply(&entries, &manifest, &untouched, true);
-    assert_eq!(planned.len(), manifest.files.len());
+    assert_eq!(
+        planned.iter().filter(|a| !a.starts_with("command")).count(),
+        manifest.files.len()
+    );
     assert!(
         !untouched.exists(),
         "a dry run created {}",

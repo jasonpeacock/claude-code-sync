@@ -33,6 +33,8 @@ fn is_boundary(byte: u8) -> bool {
     matches!(
         byte,
         b'/' | b'\\' | b'"' | b'\'' | b' ' | b'\t' | b'\r' | b'\n'
+            // Inside a rule or a list: `Read(/home/you)`, `[/home/you]`, `PATH=/home/you:/bin`.
+            | b')' | b']' | b',' | b';' | b':'
     )
 }
 
@@ -271,6 +273,16 @@ mod tests {
             resolve_command("${NODE} ${HOME}/x", &nix()),
             "/usr/bin/node /home/dev/x"
         );
+    }
+
+    #[test]
+    fn a_home_that_ends_a_rule_or_a_list_is_still_this_home() {
+        let ctx = nix();
+        assert_eq!(tokenize_path("Read(/home/dev)", &ctx), "Read(${HOME})");
+        assert_eq!(tokenize_path("[/home/dev]", &ctx), "[${HOME}]");
+        assert_eq!(tokenize_path("/home/dev:/bin", &ctx), "${HOME}:/bin");
+        assert_eq!(tokenize_path("/home/dev,/x", &ctx), "${HOME},/x");
+        assert_eq!(tokenize_path("/home/devx", &ctx), "/home/devx");
     }
 
     #[test]

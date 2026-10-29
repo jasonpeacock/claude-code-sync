@@ -75,7 +75,7 @@ Unpacks an archive onto this machine, re-expanding every token against this mach
 | `--dry-run` | Print every create, update and link without writing anything. Skips the snapshot too |
 | `--merge=STRATEGY` | How to reconcile `settings.json`. One of `incoming`, `existing`, `replace`, `ask`. Defaults to `incoming` |
 
-**Run `--dry-run` first.** It shows the exact plan, and it is the cheapest way to confirm an archive is what you think it is.
+**Run `--dry-run` first.** It shows the exact plan, and it is the cheapest way to confirm an archive is what you think it is. Every hook, status line or credential helper the restored settings would run that this machine does not already have is listed on its own `command` line, so you see what an archive will execute before you let it.
 
 ### `rollback`
 
@@ -238,7 +238,7 @@ An archive can arrive from anywhere, so restore treats one as untrusted input ra
 - An entry outside `claude/` and `agents/`, or any `.zip` entry, stops the restore instead of being skipped. Archives that expand past 512 MB are refused.
 - All of these checks, and the `settings.json` merge, run for the whole archive before the first write, so a rejected archive leaves nothing half-applied.
 
-The manifest is not signed: anyone who can modify an archive can rewrite its manifest too. The hash check catches a file appended carelessly, not a deliberate forgery, so only restore archives you trust. A restored `settings.json` can add hooks, which run commands.
+The manifest is not signed: anyone who can modify an archive can rewrite its manifest too. The hash check catches a file appended carelessly, not a deliberate forgery, so only restore archives you trust. A restored `settings.json` can add hooks, which run commands; the plan names each new one.
 
 ## Building from source
 
@@ -247,7 +247,7 @@ cargo build --release
 cargo test
 ```
 
-92 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
+94 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
 
 ## License
 
