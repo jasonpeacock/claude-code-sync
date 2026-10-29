@@ -1,8 +1,8 @@
 use std::io::{self, BufRead, Write};
 
 use claude_code_sync::app::{
-    backup, home_dir, printable, read_include_list, read_manifest, restore, settings_conflicts,
-    snapshot, write_new, RestoreOptions, FAILED, SKIPPED,
+    backup, home_dir, printable, read_include_list, read_manifest, remove_created, restore,
+    settings_conflicts, snapshot, write_new, RestoreOptions, FAILED, SKIPPED,
 };
 use claude_code_sync::archive::{read_zip, Result};
 use claude_code_sync::classify::BackupOptions;
@@ -15,6 +15,7 @@ claude-code-sync: portable backup and restore for a Claude Code setup
 
   claude-code-sync backup  [--with-memory] [--include-credentials] [--out DIR]
   claude-code-sync restore <archive.zip> [--merge=STRATEGY] [--dry-run]
+  claude-code-sync rollback [pre-restore-STAMP.zip] [--dry-run]
   claude-code-sync --version
 
 Merge strategies, applied to settings.json only:
@@ -196,6 +197,169 @@ fn ask_for(conflicts: &[Conflict]) -> Result<Vec<(String, Choice)>> {
     Ok(answers)
 }
 
+/// Write `<stem>.zip`, or `<stem>-2.zip` and so on when a run in the same second got there first.
+/// Never over an existing file.
+fn write_unique(
+    directory: &std::path::Path,
+    stem: &str,
+    data: &[u8],
+    private: bool,
+) -> Result<std::path::PathBuf> {
+    for attempt in 1.. {
+        let name = if attempt == 1 {
+            format!("{stem}.zip")
+        } else {
+            format!("{stem}-{attempt}.zip")
+        };
+        let out = directory.join(name);
+        match write_new(&out, data, private) {
+            Ok(()) => return Ok(out),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt < 100 => {}
+            Err(error) => return Err(format!("{}: {error}", out.display()).into()),
+        }
+    }
+    unreachable!("the loop returns")
+}
+
+/// `pre-restore-<stamp>.zip` and then `pre-restore-<stamp>-2.zip`, in the order they were written.
+/// Plain name order puts the `-2` first, because `-` sorts before `.`.
+fn snapshot_order(name: &str) -> (String, u32) {
+    let stem = name
+        .trim_start_matches("pre-restore-")
+        .trim_end_matches(".zip");
+    // The stamp is `YYYYMMDD-HHMMSS`; anything after a further `-` is the attempt.
+    match stem.get(15..).and_then(|rest| rest.strip_prefix('-')) {
+        Some(attempt) => (stem[..15].to_string(), attempt.parse().unwrap_or(0)),
+        None => (stem.to_string(), 1),
+    }
+}
+
+/// The snapshot to roll back to: the one named, which must be a pre-restore snapshot in
+/// `~/.claude/backups`, or else the newest there. The stamp in the name sorts by time.
+fn pick_snapshot(
+    directory: &std::path::Path,
+    named: Option<&String>,
+) -> Result<std::path::PathBuf> {
+    let is_snapshot = |name: &str| name.starts_with("pre-restore-") && name.ends_with(".zip");
+    let Some(named) = named else {
+        let newest = std::fs::read_dir(directory)
+            .map_err(|e| format!("{}: {e}", directory.display()))?
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| is_snapshot(name))
+            .max_by_key(|name| snapshot_order(name))
+            .ok_or_else(|| format!("no pre-restore snapshot in {}", directory.display()))?;
+        return Ok(directory.join(newest));
+    };
+    let given = std::path::Path::new(named);
+    let name = given
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| is_snapshot(name))
+        .ok_or_else(|| format!("{named} is not a pre-restore-*.zip snapshot"))?;
+    let path = directory.join(name);
+    let same_place = match given.parent().filter(|p| !p.as_os_str().is_empty()) {
+        None => true,
+        Some(parent) => std::fs::canonicalize(parent).ok() == std::fs::canonicalize(directory).ok(),
+    };
+    if !same_place {
+        return Err(format!("{named} is not in {}", directory.display()).into());
+    }
+    Ok(path)
+}
+
+/// Vet, snapshot and apply an archive, then report. A rollback also removes what the restore it
+/// undoes created, and its own snapshot covers those files so it can be undone in turn.
+fn apply(
+    entries: &[claude_code_sync::archive::Entry],
+    manifest: &claude_code_sync::archive::Manifest,
+    strategy: MergeStrategy,
+    dry_run: bool,
+    rollback: bool,
+    now: &chrono::DateTime<chrono::Local>,
+    host: &str,
+) -> Result<i32> {
+    let mut answers: Vec<(String, Choice)> = Vec::new();
+    if strategy == MergeStrategy::Ask {
+        answers = ask_for(&settings_conflicts(entries)?)?;
+    }
+    let mut resolve = |conflict: &Conflict| {
+        answers
+            .iter()
+            .find(|(path, _)| path == &conflict.path)
+            .map(|(_, choice)| *choice)
+            .unwrap_or(Choice::Incoming)
+    };
+
+    // A dry run first, always: it vets the whole archive, so one that is refused leaves no
+    // snapshot behind and writes nothing at all.
+    let mut actions = restore(
+        entries,
+        manifest,
+        &mut RestoreOptions {
+            strategy,
+            dry_run: true,
+            resolve: &mut resolve,
+        },
+    )?;
+    if rollback {
+        actions.extend(remove_created(manifest, true)?);
+    }
+
+    if !dry_run {
+        let directory = home_dir()?.join(".claude").join("backups");
+        // The snapshot must cover everything this restore could overwrite, which is decided by
+        // the archive, not by this machine's include list.
+        let removing: &[String] = if rollback { &manifest.created } else { &[] };
+        let snapshot = snapshot(manifest, removing, now.to_rfc3339(), host.to_string())?;
+        std::fs::create_dir_all(&directory)?;
+        let out = write_unique(
+            &directory,
+            &format!("pre-restore-{}", stamp(now)),
+            &snapshot,
+            true,
+        )?;
+        println!("snapshot of current config -> {}\n", out.display());
+
+        actions = restore(
+            entries,
+            manifest,
+            &mut RestoreOptions {
+                strategy,
+                dry_run: false,
+                resolve: &mut resolve,
+            },
+        )?;
+        if rollback {
+            actions.extend(remove_created(manifest, false)?);
+        }
+    }
+
+    for action in &actions {
+        println!("  {}", printable(action));
+    }
+    let failed = actions.iter().filter(|a| a.starts_with(FAILED)).count();
+    let skipped = actions.iter().filter(|a| a.starts_with(SKIPPED)).count();
+    println!(
+        "\n{} {}{}",
+        actions.len() - failed - skipped,
+        if dry_run {
+            "planned (dry run, nothing written)"
+        } else {
+            "applied"
+        },
+        if skipped > 0 {
+            format!(", {skipped} skipped")
+        } else {
+            String::new()
+        }
+    );
+    if failed > 0 {
+        eprintln!("{failed} link(s) could not be restored");
+        return Ok(1);
+    }
+    Ok(0)
+}
+
 fn run() -> Result<i32> {
     let args = Args::parse(std::env::args().skip(1).collect());
 
@@ -245,9 +409,12 @@ fn run() -> Result<i32> {
                 .unwrap_or(std::env::current_dir()?);
             std::fs::create_dir_all(&directory)
                 .map_err(|e| format!("{}: {e}", directory.display()))?;
-            let out = directory.join(format!("claude-sync-{host}-{}.zip", stamp(&now)));
-            write_new(&out, &archive, manifest.includes_credentials)
-                .map_err(|e| format!("{}: {e}", out.display()))?;
+            let out = write_unique(
+                &directory,
+                &format!("claude-sync-{host}-{}", stamp(&now)),
+                &archive,
+                manifest.includes_credentials,
+            )?;
 
             println!(
                 "{} files, {} links",
@@ -264,87 +431,52 @@ fn run() -> Result<i32> {
                 eprintln!("restore needs an archive path\n\n{USAGE}");
                 return Ok(1);
             };
-
             let requested = args.value("--merge").unwrap_or("incoming");
             let Some(strategy) = MergeStrategy::parse(requested) else {
                 eprintln!("unknown merge strategy: {requested}");
                 return Ok(1);
             };
-
-            let dry_run = args.has("--dry-run");
             let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
             let entries = read_zip(bytes).map_err(|e| format!("{path}: {e}"))?;
             let manifest = read_manifest(&entries)?;
-
-            let mut answers: Vec<(String, Choice)> = Vec::new();
-            if strategy == MergeStrategy::Ask {
-                answers = ask_for(&settings_conflicts(&entries)?)?;
-            }
-            let mut resolve = |conflict: &Conflict| {
-                answers
-                    .iter()
-                    .find(|(path, _)| path == &conflict.path)
-                    .map(|(_, choice)| *choice)
-                    .unwrap_or(Choice::Incoming)
-            };
-
-            // A dry run first, always: it vets the whole archive, so one that is refused leaves
-            // no snapshot behind and writes nothing at all.
-            let mut actions = restore(
+            apply(
                 &entries,
                 &manifest,
-                &mut RestoreOptions {
-                    strategy,
-                    dry_run: true,
-                    resolve: &mut resolve,
-                },
-            )?;
+                strategy,
+                args.has("--dry-run"),
+                false,
+                &now,
+                &host,
+            )
+        }
 
-            if !dry_run {
-                let directory = home_dir()?.join(".claude").join("backups");
-                // The snapshot must cover everything this restore could overwrite, which is
-                // decided by the archive, not by this machine's include list.
-                let snapshot = snapshot(&manifest, now.to_rfc3339(), host.clone())?;
-                std::fs::create_dir_all(&directory)?;
-                let out = directory.join(format!("pre-restore-{}.zip", stamp(&now)));
-                write_new(&out, &snapshot, true).map_err(|e| format!("{}: {e}", out.display()))?;
-                println!("snapshot of current config -> {}\n", out.display());
-
-                actions = restore(
-                    &entries,
-                    &manifest,
-                    &mut RestoreOptions {
-                        strategy,
-                        dry_run: false,
-                        resolve: &mut resolve,
-                    },
-                )?;
+        Some("rollback") => {
+            args.check(&["--dry-run"], &[], 1)?;
+            let directory = home_dir()?.join(".claude").join("backups");
+            let path = pick_snapshot(&directory, args.positional.first())?;
+            let shown = path.display().to_string();
+            let bytes = std::fs::read(&path).map_err(|e| format!("{shown}: {e}"))?;
+            let entries = read_zip(bytes).map_err(|e| format!("{shown}: {e}"))?;
+            let manifest = read_manifest(&entries)?;
+            // A rollback deletes what the restore created, so it trusts only a snapshot this
+            // machine wrote, never an archive from somewhere else renamed to look like one.
+            if manifest.source_host != host {
+                return Err(format!(
+                    "{shown} was taken on {}, not this machine; refusing to roll back with it",
+                    manifest.source_host
+                )
+                .into());
             }
-
-            for action in &actions {
-                println!("  {}", printable(action));
-            }
-            let failed = actions.iter().filter(|a| a.starts_with(FAILED)).count();
-            let skipped = actions.iter().filter(|a| a.starts_with(SKIPPED)).count();
-            println!(
-                "\n{} {}{}",
-                actions.len() - failed - skipped,
-                if dry_run {
-                    "planned (dry run, nothing written)"
-                } else {
-                    "applied"
-                },
-                if skipped > 0 {
-                    format!(", {skipped} skipped")
-                } else {
-                    String::new()
-                }
-            );
-            if failed > 0 {
-                eprintln!("{failed} link(s) could not be restored");
-                return Ok(1);
-            }
-            Ok(0)
+            println!("rolling back to {shown}\n");
+            apply(
+                &entries,
+                &manifest,
+                MergeStrategy::Replace,
+                args.has("--dry-run"),
+                true,
+                &now,
+                &host,
+            )
         }
 
         Some(other) => {
@@ -439,6 +571,26 @@ mod tests {
         assert_eq!(
             printable("link    claude/x -> /home/dev"),
             "link    claude/x -> /home/dev"
+        );
+    }
+
+    #[test]
+    fn snapshots_are_ordered_as_they_were_written() {
+        let mut names = vec![
+            "pre-restore-20261029-101500-2.zip",
+            "pre-restore-20261029-101500.zip",
+            "pre-restore-20261028-235959.zip",
+            "pre-restore-20261029-101500-10.zip",
+        ];
+        names.sort_by_key(|name| snapshot_order(name));
+        assert_eq!(
+            names,
+            vec![
+                "pre-restore-20261028-235959.zip",
+                "pre-restore-20261029-101500.zip",
+                "pre-restore-20261029-101500-2.zip",
+                "pre-restore-20261029-101500-10.zip",
+            ]
         );
     }
 

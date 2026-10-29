@@ -858,7 +858,15 @@ fn snapshot_territory(path: &str) -> bool {
 /// differently cased spelling on a case-insensitive disk, follow links into trees the archive
 /// never touches, and trip the size caps on them. Reading the named paths has none of those gaps.
 /// It may hold the credentials file, so the caller writes it owner-only.
-pub fn snapshot(archive: &Manifest, created_at: String, host: String) -> Result<Vec<u8>> {
+///
+/// `also` names more paths to cover: a rollback removes files, and its own snapshot has to hold
+/// them so that the rollback can be rolled back.
+pub fn snapshot(
+    archive: &Manifest,
+    also: &[String],
+    created_at: String,
+    host: String,
+) -> Result<Vec<u8>> {
     let ctx = current_context()?;
     let home = home_dir()?;
     let mut manifest = Manifest::new(
@@ -871,32 +879,45 @@ pub fn snapshot(archive: &Manifest, created_at: String, host: String) -> Result<
     );
     let mut entries = Vec::new();
 
-    for record in &archive.files {
-        let Some(absolute) = target_path(&home, &record.path) else {
+    let paths = archive.files.iter().map(|f| &f.path).chain(also);
+    for path in paths {
+        let Some(absolute) = target_path(&home, path) else {
             continue;
         };
         let Ok(metadata) = fs::metadata(&absolute) else {
+            // Nothing there yet: this restore creates it, so rolling it back removes it.
+            if fs::symlink_metadata(&absolute).is_err() {
+                manifest.created.push(path.clone());
+            }
             continue;
         };
         if !metadata.is_file() {
             continue;
         }
         let raw = fs::read(&absolute).map_err(at(&absolute))?;
-        let data = pack(&record.path, &absolute, &raw, &ctx, true)?;
-        if record.path.eq_ignore_ascii_case(CREDENTIALS) {
+        let data = pack(path, &absolute, &raw, &ctx, true)?;
+        if path.eq_ignore_ascii_case(CREDENTIALS) {
             manifest.includes_credentials = true;
         }
         manifest.files.push(FileRecord {
-            path: record.path.clone(),
+            path: path.clone(),
             sha256: sha256_hex(&data),
             size: data.len(),
             executable: is_executable(&metadata),
             crlf: uses_crlf(&raw),
         });
         entries.push(Entry {
-            path: record.path.clone(),
+            path: path.clone(),
             data,
         });
+    }
+
+    for link in &archive.links {
+        let missing =
+            target_path(&home, &link.path).is_some_and(|path| fs::symlink_metadata(path).is_err());
+        if missing {
+            manifest.created.push(link.path.clone());
+        }
     }
 
     let total: usize = entries.iter().map(|e| e.data.len()).sum();
@@ -934,6 +955,51 @@ pub fn read_manifest(entries: &[Entry]) -> Result<Manifest> {
         .into());
     }
     Ok(manifest)
+}
+
+/// Removes what a rolled-back restore created, as recorded in its snapshot's `created` list.
+///
+/// CRITICAL: this deletes files, so it only ever removes a regular file or a symlink itself,
+/// never a directory's contents, and only one whose directory resolves inside the roots. The
+/// caller only hands it a snapshot this tool wrote, on this machine. Directories the restore
+/// made are removed once empty.
+pub fn remove_created(manifest: &Manifest, dry_run: bool) -> Result<Vec<String>> {
+    let home = home_dir()?;
+    let roots = Roots::new(&home);
+    let tops = [home.join(".claude"), home.join(".agents")];
+    let mut actions = Vec::new();
+
+    for path in &manifest.created {
+        check_safe(path)?;
+        let Some(absolute) = target_path(&home, path) else {
+            continue;
+        };
+        let Ok(metadata) = fs::symlink_metadata(&absolute) else {
+            continue;
+        };
+        let inside = absolute
+            .parent()
+            .is_some_and(|parent| roots.contain(parent));
+        if !inside || !(metadata.is_file() || metadata.is_symlink()) {
+            actions.push(format!(
+                "{SKIPPED}  {path}: not a file this restore created"
+            ));
+            continue;
+        }
+        actions.push(format!("remove  {path}"));
+        if dry_run {
+            continue;
+        }
+        fs::remove_file(&absolute).map_err(at(&absolute))?;
+        let mut dir = absolute.parent();
+        while let Some(parent) = dir.filter(|parent| !tops.iter().any(|top| top == parent)) {
+            if fs::remove_dir(parent).is_err() {
+                break;
+            }
+            dir = parent.parent();
+        }
+    }
+    Ok(actions)
 }
 
 /// Action lines starting with this are links that could be neither created nor copied.

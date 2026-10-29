@@ -44,6 +44,10 @@ pub struct Manifest {
     pub includes_credentials: bool,
     pub links: Vec<LinkRecord>,
     pub files: Vec<FileRecord>,
+    /// Pre-restore snapshots only: paths the restore was about to create, which a rollback
+    /// removes. Restore itself never reads this.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created: Vec<String>,
 }
 
 impl Manifest {
@@ -58,6 +62,7 @@ impl Manifest {
             includes_credentials: options.include_credentials,
             links: Vec::new(),
             files: Vec::new(),
+            created: Vec::new(),
         }
     }
 }

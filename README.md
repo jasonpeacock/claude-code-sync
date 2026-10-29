@@ -50,6 +50,7 @@ This tool stores those paths as `${HOME}` and `${NODE}` tokens and re-expands th
 ```
 claude-code-sync backup  [--with-memory] [--include-credentials] [--out DIR]
 claude-code-sync restore <archive.zip> [--merge=STRATEGY] [--dry-run]
+claude-code-sync rollback [pre-restore-STAMP.zip] [--dry-run]
 claude-code-sync --help | --version
 ```
 
@@ -75,6 +76,16 @@ Unpacks an archive onto this machine, re-expanding every token against this mach
 | `--merge=STRATEGY` | How to reconcile `settings.json`. One of `incoming`, `existing`, `replace`, `ask`. Defaults to `incoming` |
 
 **Run `--dry-run` first.** It shows the exact plan, and it is the cheapest way to confirm an archive is what you think it is.
+
+### `rollback`
+
+Undoes a restore from the snapshot it took: every file it overwrote is put back exactly as it was, `settings.json` included, and every file it created is removed, along with any directory left empty. With no argument it uses the newest snapshot in `~/.claude/backups`. A rollback takes a snapshot of its own, so running `rollback` again undoes it.
+
+Because it deletes files, it only accepts a `pre-restore-*.zip` from `~/.claude/backups` that was taken on this machine.
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Print what would be put back and removed, without writing anything |
 
 ### Global
 
@@ -208,7 +219,7 @@ The archive always stores LF, and records which files were written with CRLF. On
 
 ### Safety
 
-- Before anything is overwritten, every file the restore will replace is copied to `~/.claude/backups/pre-restore-<stamp>.zip`. Always, not optionally. Files are replaced by writing beside them and renaming, so a hard link is never written through.
+- Before anything is overwritten, every file the restore will replace is copied to `~/.claude/backups/pre-restore-<stamp>.zip`, along with the list of files it will create. Always, not optionally. `rollback` uses it to undo the restore. Files are replaced by writing beside them and renaming, so a hard link is never written through.
 - `--dry-run` writes nothing and skips the snapshot. An option a command does not know, `--dry-run=true` included, is refused rather than ignored.
 - Hook and script execute bits survive the round trip. A restored `.credentials.json`, and any archive or snapshot that may hold it, is written owner-only.
 - Every entry carries a CRC32, verified on read. A corrupt archive fails loudly.
@@ -235,7 +246,7 @@ cargo build --release
 cargo test
 ```
 
-87 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
+89 tests. The pure logic is covered directly: path tokenization, settings merge across all four strategies, line-ending and binary handling, include/exclude classification, archive round-tripping, and the archive-path rules that reject a crafted zip. Filesystem walking and symlink recreation are covered by a real backup-and-restore round trip into a `CLAUDE_SYNC_HOME` directory rather than by mocks, because that is what catches the failures mocks hide.
 
 ## License
 

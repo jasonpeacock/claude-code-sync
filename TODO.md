@@ -53,8 +53,9 @@ Mark an item `[x]` when it is fixed, and note how.
 - [x] **S12. An existing dangling link at a link path** breaks the restore or writes through to
   the old target.
   Fixed: anything already at a link path, a dangling link included, is left alone (`symlink_metadata`, not `exists`).
-- [ ] **S13. Existing links are never updated** to a new target. (Relative targets are now resolved
+- [x] **S13. Existing links are never updated** to a new target. (Relative targets are now resolved
   against the link's directory for every check and for the copy fallback.)
+  Superseded by the simplified link policy: the code it describes is gone.
 - [ ] **S14.** *(unconfirmed)* An archive can add hooks that run arbitrary commands, even under
   `--merge=existing`, and `--dry-run` does not show the settings change.
 
@@ -140,8 +141,9 @@ Mark an item `[x]` when it is fixed, and note how.
   dot.
 - [ ] **M5. On case-insensitive filesystems a differently-cased `settings.json`** skips the merge
   and replaces local settings wholesale.
-- [ ] **M6. The pre-restore snapshot cannot roll a restore back**, because restoring it is itself
+- [x] **M6. The pre-restore snapshot cannot roll a restore back**, because restoring it is itself
   a merge.
+  Fixed: `rollback` restores a snapshot with `--merge=replace` and removes what the restore created, which snapshots now record (`Manifest.created`). It takes its own snapshot, so it can be undone.
 
 ## Line endings
 
@@ -165,8 +167,9 @@ Mark an item `[x]` when it is fixed, and note how.
 - [x] **C4. A dangling `--out` or `--out=`** silently writes to the current directory; `--out`
   swallows the next flag.
   Fixed: an empty value, or one starting with `-`, is refused.
-- [ ] **C5. Archive and snapshot names are only unique to the second.** (An existing file is no
+- [x] **C5. Archive and snapshot names are only unique to the second.** (An existing file is no
   longer overwritten: `write_new` fails instead.)
+  Fixed: a name already taken gets `-2`, `-3`, and so on; snapshots are ordered by stamp, then attempt.
 - [ ] **C6. Parser gaps:** first value wins. (Extra positionals are now refused; `--` now ends
   options.)
 
@@ -303,13 +306,16 @@ A second adversarial review of the S/B/C fixes above, with reproductions.
   library and used for every path printed.
 - [x] **V63. The 64 MB per-entry cap refused a large but compressible history.jsonl.** Fixed: only
   the 512 MB archive-wide cap remains; 64 MB now only skips binaries reached through links.
-- [ ] **V64. Links pointing outside home (dotfiles in `/workplace`) are no longer carried at all.**
+- [x] **V64. Links pointing outside home (dotfiles in `/workplace`) are no longer carried at all.**
   Accepted for now: restore never creates links out of the roots, so the pointer would be skipped
   anyway. Reported on stderr during backup.
-- [ ] **V65. Links in older archives into corners backups leave out (plugin marketplace skills)**
+  Superseded by the simplified link policy: the code it describes is gone.
+- [x] **V65. Links in older archives into corners backups leave out (plugin marketplace skills)**
   are no longer recreated. Accepted: same reason as V54.
-- [ ] **V13. Backup reads the whole tree followed through outside links**, so a link to a large
+  Superseded by the simplified link policy: the code it describes is gone.
+- [x] **V13. Backup reads the whole tree followed through outside links**, so a link to a large
   checkout makes a large archive. Backup now fails at the same 64 MB / 512 MB caps restore uses.
+  Superseded by the simplified link policy: the code it describes is gone.
 
 ## Simplified link policy (2026-10-28)
 

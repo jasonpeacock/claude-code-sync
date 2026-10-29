@@ -477,7 +477,7 @@ fn a_restore_never_writes_outside_the_two_roots() {
         &[],
     );
     std::env::set_var(HOME_OVERRIDE, &target);
-    let taken = read_zip(snapshot(&incoming, "now".into(), "host".into()).unwrap()).unwrap();
+    let taken = read_zip(snapshot(&incoming, &[], "now".into(), "host".into()).unwrap()).unwrap();
     let taken_manifest = read_manifest(&taken).unwrap();
     let held: Vec<&str> = taken_manifest
         .files
