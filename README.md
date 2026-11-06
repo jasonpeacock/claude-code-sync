@@ -206,6 +206,32 @@ Both remove the binary and the PATH entry. Neither touches your `~/.claude` conf
 
 Not available yet. `brew install claude-code-sync` needs the project in homebrew-core, which requires 75 or more stars, forks or watchers. A personal tap works before then, and the formula is ready at [packaging/homebrew/claude-code-sync.rb](packaging/homebrew/claude-code-sync.rb): create a repo named `homebrew-tap`, copy the formula to `Formula/`, fill in the version and checksums from a release's `SHA256SUMS`, and it becomes `brew install ehsan18t/tap/claude-code-sync`. Until then, the `curl` line above works on macOS.
 
+### Nix / home-manager
+
+The flake builds claude-code-sync from source and runs its tests as part of the build.
+
+```sh
+nix run github:jasonpeacock/claude-code-sync -- --help
+nix profile install github:jasonpeacock/claude-code-sync
+```
+
+Other outputs: `overlays.default` (adds `pkgs.claude-code-sync`), `devShells.default`, and `homeModules.default` (also `homeManagerModules.default`).
+
+In home-manager:
+
+```nix
+{
+  inputs.claude-code-sync.url = "github:jasonpeacock/claude-code-sync";
+
+  # in your home-manager configuration:
+  imports = [ inputs.claude-code-sync.homeModules.default ];
+
+  programs.claude-code-sync.enable = true;
+}
+```
+
+The module only installs the package, because claude-code-sync has no config file. Set `programs.claude-code-sync.package` to install a different build.
+
 ## How it works
 
 ### Path rewriting
